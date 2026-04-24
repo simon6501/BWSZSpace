@@ -83,14 +83,7 @@ async function ensureStorage() {
     await writeState(normalizeState(JSON.parse(row.value)), 'migrate');
   }
 
-  if (!fs.existsSync(USERS_FILE)) {
-    const username = process.env.APP_USERNAME || 'bwsz';
-    const password = process.env.APP_PASSWORD || 'bwsz-local-2026';
-    const displayName = process.env.APP_DISPLAY_NAME || 'BW & SZ';
-    const user = await makeUser(username, password, displayName);
-    await writeJsonAtomic(USERS_FILE, { users: [user] });
-    console.log(`Initialized local user: ${username}`);
-  }
+  await ensureUsers();
 }
 
 async function handleRequest(req, res) {
@@ -189,7 +182,7 @@ async function getAuthUser(req) {
 
 async function getLocalUser() {
   const { users } = await readUsers();
-  return users[0] || { id: 'local', username: 'local', displayName: 'Local User', role: 'owner' };
+  return users[0] || { id: 'bw-local', username: 'bw', displayName: 'BW', role: 'person', person: 'bw' };
 }
 
 async function updateState(req, res) {
@@ -319,8 +312,36 @@ async function writeJsonAtomic(file, data) {
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
   await fsp.rename(tmp, file);
 }
-async function makeUser(username, password, displayName) {
-  return { id: crypto.randomUUID(), username, displayName, role: 'owner', createdAt: new Date().toISOString(), password: await hashPassword(password) };
+async function ensureUsers() {
+  const defaults = [
+    { username: 'bw', displayName: 'BW', person: 'bw', envPassword: process.env.BW_PASSWORD || process.env.APP_PASSWORD || 'bw-local-2026' },
+    { username: 'sz', displayName: 'SZ', person: 'sz', envPassword: process.env.SZ_PASSWORD || process.env.APP_PASSWORD || 'sz-local-2026' }
+  ];
+
+  let existing = [];
+  if (fs.existsSync(USERS_FILE)) {
+    try {
+      existing = (await readUsers()).users || [];
+    } catch {
+      existing = [];
+    }
+  }
+
+  const users = [];
+  for (const spec of defaults) {
+    const found = existing.find((user) => user.username === spec.username || user.person === spec.person);
+    if (found) {
+      users.push({ ...found, username: spec.username, displayName: found.displayName || spec.displayName, role: 'person', person: spec.person });
+    } else {
+      users.push(await makeUser(spec.username, spec.envPassword, spec.displayName, spec.person));
+      console.log(`Initialized local user: ${spec.username}`);
+    }
+  }
+  await writeJsonAtomic(USERS_FILE, { users });
+}
+
+async function makeUser(username, password, displayName, person) {
+  return { id: crypto.randomUUID(), username, displayName, role: 'person', person, createdAt: new Date().toISOString(), password: await hashPassword(password) };
 }
 async function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('base64url');
@@ -347,7 +368,7 @@ function signToken(raw) {
   const sig = crypto.createHmac('sha256', SESSION_SECRET).update(raw).digest('base64url');
   return `${raw}.${sig}`;
 }
-function publicUser(user) { return { id: user.id, username: user.username, displayName: user.displayName, role: user.role }; }
+function publicUser(user) { return { id: user.id, username: user.username, displayName: user.displayName, role: user.role, person: user.person || (user.username === 'sz' ? 'sz' : 'bw') }; }
 function getCookie(req, name) {
   const header = req.headers.cookie || '';
   for (const part of header.split(';')) {
@@ -386,6 +407,7 @@ function normalizeState(input) {
     ...base,
     meta: { ...base.meta, ...(state.meta || {}), version: '0.2.0' },
     couple: { ...base.couple, ...(state.couple || {}) },
+    people: mergePeople(base.people, state.people),
     modules: base.modules,
     spaces: { ...base.spaces }
   };
@@ -424,6 +446,7 @@ function normalizeState(input) {
   normalized.spaces.mentor = { ...base.spaces.mentor, ...(oldSpaces.mentor || {}) };
   normalized.spaces.achievements = { ...base.spaces.achievements, ...(oldSpaces.achievements || {}) };
   normalized.spaces.dashboard = { ...base.spaces.dashboard, ...(oldSpaces.dashboard || {}) };
+  tagPeople(normalized);
   return normalized;
 }
 
@@ -440,18 +463,22 @@ function seedState() {
         { id: 'sz', name: 'SZ', field: 'CS / EE', color: '#4d9de0' }
       ]
     },
+    people: {
+      bw: { id: 'bw', name: 'BW', color: '#ff8c42', avatar: '/assets/dog.jpg' },
+      sz: { id: 'sz', name: 'SZ', color: '#4d9de0', avatar: '/assets/dog.jpg' }
+    },
     modules: [
-      { key: 'home', area: 'research', title: '科研总览', icon: '⌂', accent: '#ff8c42', description: '科研区的今日节奏、核心状态和快速入口。' },
-      { key: 'focus', area: 'research', title: '专注定时', icon: '◴', accent: '#ff6b8b', description: '像屏幕使用时间一样记录、补录和回看专注。' },
-      { key: 'planning', area: 'research', title: '项目与日程', icon: '▦', accent: '#4d9de0', description: '长期项目、临时任务、每日/每周任务和可拖拽时间轴。' },
-      { key: 'submissions', area: 'research', title: '投稿管理', icon: '✉', accent: '#9b5de5', description: '论文投稿、返修和审稿节点。' },
-      { key: 'mentor', area: 'research', title: '向上管理导师', icon: '☉', accent: '#6878c8', description: '导师会、汇报材料、问题池和跟进项。' },
-      { key: 'dashboard', area: 'research', title: '数据看板', icon: '▧', accent: '#3e8795', description: '只保留专注、任务、健康、导师和成就的宏观视图。' },
-      { key: 'life', area: 'life', title: '生活待办', icon: '✓', accent: '#a7c957', description: '简单记录生活里要做的小事，勾掉就好。' },
-      { key: 'health', area: 'life', title: '健康管理', icon: '♥', accent: '#43aa8b', description: '睡眠、运动、饮水、用眼、恢复和请假记录。' },
-      { key: 'care', area: 'life', title: '心灵关怀', icon: '✦', accent: '#f9c74f', description: '情绪、感谢、鼓励和低能量预案。' },
-      { key: 'memories', area: 'life', title: '我们的记忆', icon: '♡', accent: '#ff6b8b', description: '记录两个人生命里重要的时刻、纪念日、旅行和小确幸。' },
-      { key: 'achievements', area: 'research', title: '成就殿堂', icon: '★', accent: '#f9c74f', description: '自动触发徽章，也支持手动设计徽章任务。' }
+      { key: 'home', area: 'research', title: '科研总览', icon: '⌂', accent: '#ff8c42', description: '' },
+      { key: 'focus', area: 'research', title: '专注定时', icon: '◴', accent: '#ff6b8b', description: '' },
+      { key: 'planning', area: 'research', title: '项目与日程', icon: '▦', accent: '#4d9de0', description: '' },
+      { key: 'submissions', area: 'research', title: '投稿管理', icon: '✉', accent: '#9b5de5', description: '' },
+      { key: 'mentor', area: 'research', title: '向上管理导师', icon: '☉', accent: '#6878c8', description: '' },
+      { key: 'dashboard', area: 'research', title: '数据看板', icon: '▧', accent: '#3e8795', description: '' },
+      { key: 'life', area: 'life', title: '生活待办', icon: '✓', accent: '#a7c957', description: '' },
+      { key: 'health', area: 'life', title: '健康管理', icon: '♥', accent: '#43aa8b', description: '' },
+      { key: 'care', area: 'life', title: '心灵关怀', icon: '✦', accent: '#f9c74f', description: '' },
+      { key: 'memories', area: 'life', title: '我们的记忆', icon: '♡', accent: '#ff6b8b', description: '' },
+      { key: 'achievements', area: 'research', title: '成就殿堂', icon: '★', accent: '#f9c74f', description: '' }
     ],
     spaces: {
       home: { todayNote: '先把重要的事情做小，再稳定推进。', pinned: ['专注 2 个深度块', '更新项目时间轴', '睡前完成健康复盘'] },
@@ -480,15 +507,17 @@ function seedState() {
       submissions: { papers: [{ id: crypto.randomUUID(), title: '待命名论文', venue: 'TBD', stage: '写作', deadline: '', next: '确认故事线和目标期刊会议' }] },
       health: {
         habits: [
-          { id: 'sleep', title: '睡眠 7h+', done: false },
-          { id: 'water', title: '饮水 6 杯', done: false },
-          { id: 'move', title: '散步 / 运动', done: false },
-          { id: 'eyes', title: '护眼休息', done: false }
+          { id: 'sleep', title: '睡眠 7h+', kind: 'check', target: 1, doneBy: { bw: false, sz: false } },
+          { id: 'water', title: '饮水 6 杯', kind: 'count', target: 6, doneBy: { bw: false, sz: false } },
+          { id: 'move', title: '散步 / 运动', kind: 'check', target: 1, doneBy: { bw: false, sz: false } },
+          { id: 'eyes', title: '护眼休息', kind: 'count', target: 3, doneBy: { bw: false, sz: false } }
         ],
+        habitLogs: {},
+        view: 'week',
         checkins: [], leave: []
       },
       care: { mood: '平静', notes: ['今天也要记得：我们不是在单打独斗。'] },
-      life: { todos: [{ id: crypto.randomUUID(), text: '买点喜欢的水果', done: false }, { id: crypto.randomUUID(), text: '一起整理一下周末计划', done: false }] },
+      life: { todos: [{ id: crypto.randomUUID(), text: '买点喜欢的水果', date: today(), createdAt: now.toISOString(), done: false, doneAt: '' }, { id: crypto.randomUUID(), text: '一起整理一下周末计划', date: today(), createdAt: now.toISOString(), done: false, doneAt: '' }] },
       memories: {
         moments: [
           { id: crypto.randomUUID(), title: 'BW&SZ Space 启动', date: today(), place: 'Home Lab', type: 'milestone', mood: '期待', detail: '我们开始把生活、科研和长期目标放进同一个共同空间。', tags: ['共同系统', '新开始'] }
@@ -506,6 +535,61 @@ function todayAt(time) { return `${today()}T${time}:00`; }
 function todayPlus(delta) { const d = new Date(); d.setDate(d.getDate() + delta); return d.toISOString().slice(0, 10); }
 function isoAt(delta, time) { return `${todayPlus(delta)}T${time}:00`; }
 function pickColor(index) { return ['#ff8c42', '#4d9de0', '#43aa8b', '#ff6b8b', '#9b5de5', '#f9c74f'][index % 6]; }
+
+function mergePeople(basePeople, people = {}) {
+  return {
+    bw: { ...basePeople.bw, ...(people.bw || {}) },
+    sz: { ...basePeople.sz, ...(people.sz || {}) }
+  };
+}
+
+function tagPeople(state) {
+  const current = 'bw';
+  const spaces = state.spaces || {};
+  for (const session of spaces.focus?.sessions || []) session.person = normalizePerson(session.person || session.owner || current);
+  if (spaces.focus?.active) spaces.focus.active.person = normalizePerson(spaces.focus.active.person || current);
+  for (const project of spaces.planning?.projects || []) project.owner = normalizePerson(project.owner);
+  for (const task of spaces.planning?.tasks || []) task.owner = normalizePerson(task.owner);
+  for (const paper of spaces.submissions?.papers || []) paper.owner = normalizePerson(paper.owner);
+  for (const meeting of spaces.mentor?.meetings || []) meeting.owner = normalizePerson(meeting.owner);
+  spaces.mentor.questions = (spaces.mentor?.questions || []).map((question) => typeof question === 'string' ? { id: crypto.randomUUID(), text: question, owner: current } : { ...question, owner: normalizePerson(question.owner) });
+  for (const todo of spaces.life?.todos || []) {
+    todo.person = normalizePerson(todo.person || current);
+    todo.date = todo.date || String(todo.createdAt || today()).slice(0, 10);
+    todo.createdAt = todo.createdAt || todayAt('09:00');
+    todo.doneAt = todo.done ? (todo.doneAt || todayAt('18:00')) : '';
+  }
+  for (const habit of spaces.health?.habits || []) {
+    habit.id = habit.id || crypto.randomUUID();
+    habit.kind = habit.kind || inferHabitKind(habit);
+    habit.target = habit.kind === 'count' ? Math.max(1, Number(habit.target || inferTargetFromTitle(habit.title) || 1)) : 1;
+    if (!habit.doneBy) habit.doneBy = { bw: Boolean(habit.done), sz: false };
+    delete habit.done;
+  }
+  spaces.health.habitLogs = spaces.health.habitLogs && typeof spaces.health.habitLogs === 'object' ? spaces.health.habitLogs : {};
+  spaces.health.view = spaces.health.view || 'week';
+  for (const checkin of spaces.health?.checkins || []) checkin.person = normalizePerson(checkin.person || current);
+  spaces.care.notes = (spaces.care?.notes || []).map((note) => typeof note === 'string' ? { id: crypto.randomUUID(), text: note, person: current } : { ...note, person: normalizePerson(note.person || current) });
+  for (const moment of spaces.memories?.moments || []) moment.person = normalizePerson(moment.person || moment.createdBy || current);
+  for (const item of spaces.achievements?.items || []) item.person = normalizePerson(item.person || current);
+  for (const task of spaces.achievements?.badgeTasks || []) task.person = normalizePerson(task.person || current);
+}
+
+function normalizePerson(value) {
+  return value === 'sz' || String(value).toLowerCase() === 'sz' ? 'sz' : 'bw';
+}
+
+function inferHabitKind(habit) {
+  if (Number(habit.target || 0) > 1) return 'count';
+  return /饮水|杯|次|护眼|拉伸|番茄/.test(habit.title || '') ? 'count' : 'check';
+}
+
+function inferTargetFromTitle(title = '') {
+  if (/饮水/.test(title)) return 6;
+  if (/护眼|拉伸/.test(title)) return 3;
+  const match = String(title).match(/(\d+)/);
+  return match ? Number(match[1]) : 1;
+}
 
 main().catch((error) => {
   console.error(error);

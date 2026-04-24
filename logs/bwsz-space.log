@@ -25,3 +25,48 @@ Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address alre
 > node --no-warnings server.js
 
 Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EADDRINUSE: address already in use 127.0.0.1:3077

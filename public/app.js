@@ -24,9 +24,11 @@ const app = {
   active: 'home',
   dirty: false,
   saving: false,
+  saveQueued: false,
   saveTimer: null,
   focusTick: null,
-  drag: null
+  drag: null,
+  swipe: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -35,6 +37,7 @@ const content = $('#content');
 window.addEventListener('DOMContentLoaded', boot);
 document.addEventListener('pointermove', handleTimelinePointerMove);
 document.addEventListener('pointerup', handleTimelinePointerUp);
+document.addEventListener('pointerup', handleSwipePointerUp);
 
 async function boot() {
   bindShellEvents();
@@ -68,26 +71,30 @@ function bindShellEvents() {
   });
 
   $('#saveBtn').addEventListener('click', () => toast('已开启自动保存：每次修改都会写入 SQLite 并生成最新备份。'));
-  $('#exportBtn').addEventListener('click', showBackupInfo);
   content.addEventListener('click', handleContentClick);
   content.addEventListener('submit', handleContentSubmit);
   content.addEventListener('input', handleContentInput);
+  content.addEventListener('pointerdown', handleSwipePointerDown);
 }
 
 async function enterApp() {
   app.state = await api.state();
   ensureModuleAreas();
+  const hadPeople = Boolean(app.state.people?.bw && app.state.people?.sz);
+  ensurePeople();
   app.activeArea = 'research';
   app.active = 'home';
   $('#loginView').classList.add('hidden');
   $('#appView').classList.remove('hidden');
   $('#logoutBtn').classList.toggle('hidden', Boolean(app.user?.loginDisabled));
+  updateIdentityChrome();
   $('#saveBtn').textContent = '自动保存已开启';
   $('#exportBtn').textContent = '备份记录';
   renderAreas();
   renderNav();
   renderActive();
   startFocusTicker();
+  if (!hadPeople) markDirty();
 }
 
 function showLogin() {
@@ -124,7 +131,7 @@ function renderNav() {
   if (!modules.some((mod) => mod.key === app.active)) app.active = modules[0]?.key || app.active;
   nav.innerHTML = modules.map((mod) => `
     <button class="nav-button ${mod.key === app.active ? 'active' : ''}" style="--active:${escAttr(mod.accent)}" data-nav="${escAttr(mod.key)}">
-      <i>${esc(mod.icon)}</i><span>${esc(mod.title)}</span>
+      <i>${moduleLogo(mod.key)}</i><span>${esc(mod.title)}</span>
     </button>
   `).join('');
   nav.querySelectorAll('[data-nav]').forEach((button) => {
@@ -134,6 +141,23 @@ function renderNav() {
       renderActive();
     });
   });
+}
+
+function moduleLogo(key) {
+  const paths = {
+    home: '<path d="M4 10.5 12 4l8 6.5v8a1.5 1.5 0 0 1-1.5 1.5H15v-5H9v5H5.5A1.5 1.5 0 0 1 4 18.5z"/>',
+    focus: '<circle cx="12" cy="13" r="7"/><path d="M9 2h6M12 7v6l4 2"/>',
+    planning: '<path d="M4 6h16M4 12h16M4 18h16"/><path d="M8 4v16M16 4v16"/>',
+    submissions: '<path d="M4 5h16v14H4z"/><path d="m4 7 8 6 8-6"/>',
+    mentor: '<path d="M5 6h14v9H8l-3 3z"/><path d="M8 9h8M8 12h5"/>',
+    dashboard: '<path d="M5 19V9M12 19V5M19 19v-7"/>',
+    achievements: '<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+    life: '<path d="M5 12.5 10 17 19 7"/>',
+    health: '<path d="M12 20s-7-4.2-7-10a4 4 0 0 1 7-2.7A4 4 0 0 1 19 10c0 5.8-7 10-7 10z"/>',
+    care: '<path d="M12 3l1.4 4.2L18 8.5l-4.6 1.3L12 14l-1.4-4.2L6 8.5l4.6-1.3z"/><path d="M18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/>',
+    memories: '<path d="M6 4h12v16l-6-3-6 3z"/><path d="M9 8h6"/>',
+  };
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[key] || paths.home}</svg>`;
 }
 
 function renderActive(options = {}) {
@@ -177,6 +201,8 @@ function renderHome() {
     <textarea data-field="spaces.home.todayNote">${esc(app.state.spaces.home.todayNote || '')}</textarea>
   `, 'wide');
 
+  addCard('今日 Todo', '自动汇总今天需要处理的任务。', renderTodayTodo(), 'home-todo');
+
   addCard('快速入口', '常用动作直接跳转。', `
     <div class="quick-grid">
       <button class="quick-card" data-jump="focus"><strong>开始专注</strong><span>计时 / 补录 / 统计</span></button>
@@ -189,12 +215,52 @@ function renderHome() {
   `, 'wide');
 }
 
+function renderTodayTodo() {
+  const todayKey = today();
+  const researchTasks = personalTasks()
+    .filter((task) => !task.done && dateInRange(todayKey, task.start, task.end))
+    .slice(0, 5);
+  const health = ensureHealth();
+  const healthTodos = (health.habits || [])
+    .filter((habit) => habitValue(habit, currentPerson()) < habitTarget(habit))
+    .slice(0, 4);
+  const total = researchTasks.length + healthTodos.length;
+  if (!total) return '<div class="today-empty"><b>今天清爽</b><span>没有到期任务。可以安排一个深度专注块。</span></div>';
+  return `
+    <div class="today-todo-list">
+      ${researchTasks.map((task) => `
+        <button class="today-todo-item" data-jump="planning">
+          <span class="todo-dot research"></span>
+          <strong>${esc(task.title)}</strong>
+          <small>${esc(task.level || 'P1')} · ${esc(task.start)} → ${esc(task.end)}</small>
+        </button>
+      `).join('')}
+      ${healthTodos.map((habit) => `
+        <button class="today-todo-item" data-jump="health">
+          <span class="todo-dot health"></span>
+          <strong>${esc(habit.title)}</strong>
+          <small>健康打卡 · ${habitValue(habit, currentPerson())}/${habitTarget(habit)}</small>
+        </button>
+      `).join('')}
+    </div>`;
+}
+
 function renderFocus() {
   const focus = app.state.spaces.focus;
   const active = focus.active;
   const elapsed = active ? Math.max(0, Math.floor((Date.now() - new Date(active.startedAt).getTime()) / 1000)) : 0;
-  const stats = focusStats(focus.chartMode || 'week');
+  const mode = focus.chartMode || 'week';
+  focus.chartAnchor = clampFocusAnchor(mode, focus.chartAnchor || today());
+  const stats = focusPeriodStats(mode, focus.chartAnchor);
   const peak = peakHour(focus.sessions || []);
+  const byPerson = focusByPerson();
+
+  addCard('两个人的专注', '共同可见，用颜色区分是谁的数据。', `
+    <div class="person-summary">
+      <div data-person="bw">${personBadge('bw')}<b>${byPerson.bw}</b><span>分钟</span></div>
+      <div data-person="sz">${personBadge('sz')}<b>${byPerson.sz}</b><span>分钟</span></div>
+    </div>
+  `, 'full');
 
   addCard('专注定时器', '开始之前只需要写一个意图；结束时自动入库和备份。', `
     <div class="focus-timer">
@@ -223,10 +289,7 @@ function renderFocus() {
   `);
 
   addCard('专注使用时间', '参考 Apple 屏幕使用时间：按天 / 周 / 月看柱状图。', `
-    <div class="segmented">
-      ${['day','week','month'].map((mode) => `<button class="${focus.chartMode === mode ? 'active' : ''}" data-focus-mode="${mode}">${modeLabel(mode)}</button>`).join('')}
-    </div>
-    ${renderBars(stats.bars, stats.max)}
+    ${renderFocusChart(mode, focus.chartAnchor, stats)}
     <div class="insight-row">
       <span class="chip">总计 ${stats.total} 分钟</span>
       <span class="chip">平均 ${stats.avg} 分钟</span>
@@ -237,7 +300,7 @@ function renderFocus() {
   addCard('最近记录', '自动保存到本地 SQLite。', `
     <div class="list compact-list">
       ${(focus.sessions || []).slice().reverse().slice(0, 8).map((session) => `
-        <article class="item"><div class="item-head"><h3>${esc(session.title || '专注')}</h3><span class="chip">${session.minutes} 分钟</span></div><p>${formatDateTime(session.start)} - ${formatTime(session.end)} · ${esc(session.source || 'timer')}</p></article>
+        <article class="item"><div class="item-head"><h3>${personBadge(session.person)} ${esc(session.title || '专注')}</h3><span class="chip">${session.minutes} 分钟</span></div><p>${formatDateTime(session.start)} - ${formatTime(session.end)} · ${esc(session.source || 'timer')}</p></article>
       `).join('') || '<p class="tiny">还没有专注记录。</p>'}
     </div>
   `, 'full');
@@ -245,13 +308,15 @@ function renderFocus() {
 
 function renderPlanning() {
   const planning = app.state.spaces.planning;
-  const selected = planning.tasks.find((task) => task.id === planning.selectedTaskId) || planning.tasks[0];
-  if (selected && !planning.selectedTaskId) planning.selectedTaskId = selected.id;
+  const projects = personalProjects();
+  const tasks = personalTasks();
+  const selected = tasks.find((task) => task.id === planning.selectedTaskId) || tasks[0];
+  if (selected && planning.selectedTaskId !== selected.id) planning.selectedTaskId = selected.id;
 
   addCard('新增长期项目', '项目是容器，任务才进入时间轴。', `
     <form class="form-grid" data-form="project">
       <label>项目名<input name="title" required placeholder="例如：期刊返修 / 家庭网站 / 实验平台"></label>
-      <label>负责人<input name="owner" placeholder="BW / SZ / 共同" value="共同"></label>
+      <label>归属<input value="${escAttr(personName(currentPerson()))}" disabled></label>
       <label>开始日期<input name="start" type="date" value="${today()}"></label>
       <label>结束日期<input name="end" type="date" value="${dateAdd(today(), 14)}"></label>
       <label class="full">备注<textarea name="notes" placeholder="例如：目标、边界、风险"></textarea></label>
@@ -262,11 +327,10 @@ function renderPlanning() {
   addCard('添加任务 / 临时任务', '任务可以归属项目，也可以作为临时任务存在；level 用来表达优先级。', `
     <form class="form-grid" data-form="task">
       <label>任务名<input name="title" required placeholder="例如：补一张消融实验图"></label>
-      <label>归属项目<select name="projectId"><option value="">临时任务</option>${planning.projects.map((project) => `<option value="${escAttr(project.id)}">${esc(project.title)}</option>`).join('')}</select></label>
+      <label>归属项目<select name="projectId"><option value="">临时任务</option>${projects.map((project) => `<option value="${escAttr(project.id)}">${esc(project.title)}</option>`).join('')}</select></label>
       <label>开始日期<input name="start" type="date" value="${today()}"></label>
       <label>结束日期<input name="end" type="date" value="${dateAdd(today(), 1)}"></label>
       <label>Level<select name="level"><option>P0</option><option selected>P1</option><option>P2</option><option>P3</option></select></label>
-      <label>状态<select name="done"><option value="false">未完成</option><option value="true">已完成</option></select></label>
       <label class="full">具体内容<textarea name="notes" placeholder="例如：验收标准、资料链接、上下文"></textarea></label>
       <button class="primary-button full">添加到时间轴</button>
     </form>
@@ -277,18 +341,18 @@ function renderPlanning() {
       <div class="segmented">${['week','month'].map((mode) => `<button class="${planning.view === mode ? 'active' : ''}" data-planning-view="${mode}">${modeLabel(mode)}</button>`).join('')}</div>
       <div class="action-row"><button class="mini-button" data-action="timeline-prev">←</button><button class="mini-button" data-action="timeline-today">今天</button><button class="mini-button" data-action="timeline-next">→</button></div>
     </div>
-    ${renderTimeline(planning)}
+    ${renderTimeline({ ...planning, projects, tasks })}
   `, 'full');
 
-  addCard('任务详情', '点击任务块或列表后在这里修改。', `<div id="taskDetailSlot">${renderTaskEditor(selected, planning)}</div>`, 'wide');
+  addCard('任务详情', '点击任务块或列表后在这里修改。', `<div id="taskDetailSlot">${renderTaskEditor(selected, { ...planning, projects, tasks })}</div>`, 'wide');
 
-  addCard('每日 / 每周任务', '同一批任务换一个更轻的列表视角。', renderTaskLists(planning));
+  addCard('每日 / 每周任务', '同一批任务换一个更轻的列表视角。', renderTaskLists({ ...planning, projects, tasks }));
 }
 
 function renderSubmissions() {
-  const papers = app.state.spaces.submissions.papers || [];
+  const papers = personalPapers();
   addCard('投稿流水线', '保留轻量投稿管理，后续可接入项目时间轴。', `
-    <div class="list">${papers.map((paper) => `<article class="item"><div class="item-head"><h3>${esc(paper.title)}</h3><span class="chip">${esc(paper.stage)}</span></div><p>目标：${esc(paper.venue || 'TBD')} · 截止：${esc(paper.deadline || '未设定')}</p><p>下一步：${esc(paper.next || '待补充')}</p></article>`).join('')}</div>
+    <div class="list">${papers.map((paper) => `<article class="item"><div class="item-head"><h3>${personBadge(paper.owner)} ${esc(paper.title)}</h3><span class="chip">${esc(paper.stage)}</span></div><p>目标：${esc(paper.venue || 'TBD')} · 截止：${esc(paper.deadline || '未设定')}</p><p>下一步：${esc(paper.next || '待补充')}</p></article>`).join('')}</div>
   `, 'wide');
   addCard('新增投稿', '论文投稿仍可以独立追踪。', `
     <form class="form-grid" data-form="paper">
@@ -300,48 +364,165 @@ function renderSubmissions() {
 }
 
 function renderHealth() {
-  const health = app.state.spaces.health;
+  const health = ensureHealth();
   const habits = health.habits || [];
-  addCard('今日健康打卡', '照参考工作站的逻辑：低摩擦、当天可见、不要制造负担。', `<div class="list">${habits.map((habit) => `<button class="habit-button ${habit.done ? 'done' : ''}" data-habit="${escAttr(habit.id)}">${habit.done ? '✓' : '○'} ${esc(habit.title)}</button>`).join('')}</div>`, 'wide');
-  addCard('健康记录 / 请假', '可以记录状态，不要求解释原因。', `
+  const mode = health.view || 'week';
+
+  addCard('今日健康打卡', '两个人都能看到；打卡型可取消，次数型可加减次数。', `
+    <div class="health-habit-grid">
+      ${habits.map(renderHabitCard).join('') || '<p class="tiny">还没有习惯，先添加一个。</p>'}
+    </div>
+  `, 'full');
+
+  addCard('习惯管理', '可以添加、修改、删除习惯；次数型适合饮水、护眼、拉伸等。', `
+    <form class="form-grid" data-form="health-habit-add">
+      <label>习惯名<input name="title" required placeholder="例如：饮水 / 护眼 / 伸展"></label>
+      <label>类型<select name="kind"><option value="check">打卡型</option><option value="count">次数型</option></select></label>
+      <label>目标次数<input name="target" type="number" min="1" value="1"></label>
+      <button class="primary-button full">添加习惯</button>
+    </form>
+    <div class="habit-manage-list">
+      ${habits.map((habit) => `
+        <form class="habit-edit-row" data-form="health-habit-edit" data-habit-id="${escAttr(habit.id)}">
+          <input name="title" value="${escAttr(habit.title)}" required>
+          <select name="kind"><option value="check" ${habit.kind !== 'count' ? 'selected' : ''}>打卡型</option><option value="count" ${habit.kind === 'count' ? 'selected' : ''}>次数型</option></select>
+          <input name="target" type="number" min="1" value="${habitTarget(habit)}">
+          <button class="mini-button">保存</button>
+          <button class="mini-button danger" type="button" data-delete-habit="${escAttr(habit.id)}">删除</button>
+        </form>
+      `).join('') || '<p class="tiny">暂无可编辑习惯。</p>'}
+    </div>
+  `, 'full');
+
+  addCard('打卡记录', '按日 / 周 / 月查看两个人的完成情况。', `
+    <div class="segmented">
+      ${['day','week','month'].map((item) => `<button class="${mode === item ? 'active' : ''}" data-health-view="${item}">${modeLabel(item)}</button>`).join('')}
+    </div>
+    ${renderHealthRecords(mode)}
+  `, 'full');
+
+  addCard('健康记录 / 请假', '可以记录状态，记录会标明是谁写的。', `
     <form class="form-grid" data-form="health-note">
       <label>类别<select name="type"><option>恢复</option><option>病假</option><option>运动</option><option>睡眠</option><option>用眼</option></select></label>
       <label>日期<input name="date" type="date" value="${today()}"></label>
       <label class="full">记录<textarea name="note" placeholder="例如：今天低能量，改成恢复优先。"></textarea></label>
       <button class="primary-button full">记录健康状态</button>
     </form>
-  `);
-  addCard('最近健康状态', '从工作强度里给身体留出位置。', `<div class="list compact-list">${(health.checkins || []).slice().reverse().slice(0, 8).map((item) => `<article class="item"><div class="item-head"><h3>${esc(item.type)}</h3><span class="chip">${esc(item.date)}</span></div><p>${esc(item.note || '')}</p></article>`).join('') || '<p class="tiny">还没有健康记录。</p>'}</div>`, 'full');
+  `, 'full');
+  addCard('最近健康状态', '两个人共同可见。', `<div class="list compact-list">${(health.checkins || []).slice().reverse().slice(0, 8).map((item) => `<article class="item"><div class="item-head"><h3>${personBadge(item.person)} ${esc(item.type)}</h3><span class="chip">${esc(item.date)}</span></div><p>${esc(item.note || '')}</p></article>`).join('') || '<p class="tiny">还没有健康记录。</p>'}</div>`, 'full');
 }
+
+function renderHabitCard(habit) {
+  const target = habitTarget(habit);
+  const current = habitValue(habit, currentPerson());
+  const done = current >= target;
+  const kind = habit.kind === 'count' ? '次数型' : '打卡型';
+  return `
+    <article class="habit-card ${done ? 'done' : ''}">
+      <div class="habit-card-head">
+        <h3>${esc(habit.title)}</h3>
+        <span class="chip">${kind} · 目标 ${target}</span>
+      </div>
+      <div class="habit-person-lines">
+        ${['bw','sz'].map((person) => renderHabitPersonLine(habit, person)).join('')}
+      </div>
+      <div class="habit-control-row">
+        ${habit.kind === 'count'
+          ? `<button class="mini-button" data-habit-action="decrement" data-habit-id="${escAttr(habit.id)}">−</button><strong>${current}/${target}</strong><button class="mini-button" data-habit-action="increment" data-habit-id="${escAttr(habit.id)}">＋</button>`
+          : `<button class="mini-button" data-habit-action="toggle" data-habit-id="${escAttr(habit.id)}">${done ? '取消打卡' : '完成打卡'}</button>`}
+      </div>
+    </article>`;
+}
+
+function renderHabitPersonLine(habit, person) {
+  const target = habitTarget(habit);
+  const value = habitValue(habit, person);
+  const pct = Math.round((Math.min(value, target) / target) * 100);
+  return `
+    <div class="habit-person-line" data-person="${escAttr(person)}">
+      ${personBadge(person)}
+      <div class="progress"><span style="--value:${pct}%"></span></div>
+      <b>${value}/${target}</b>
+    </div>`;
+}
+
+function renderHealthRecords(mode) {
+  const days = healthRecordDays(mode);
+  const label = mode === 'day' ? '今天' : mode === 'week' ? '本周' : '本月';
+  return `
+    <div class="health-record-grid ${mode}">
+      ${days.map((day) => {
+        const summary = healthDaySummary(day);
+        return `
+          <article class="health-record-card ${day === today() ? 'today' : ''}">
+            <div class="health-record-head"><strong>${esc(healthDayTitle(day, mode))}</strong><span>${summary.done}/${summary.total}</span></div>
+            <div class="health-record-people">
+              ${['bw','sz'].map((person) => `<div data-person="${escAttr(person)}"><i></i><b>${esc(personName(person))}</b><span>${summary.people[person]}/${summary.perPerson}</span></div>`).join('')}
+            </div>
+          </article>`;
+      }).join('')}
+    </div>
+    <p class="tiny">${label}记录按每个习惯是否达到当天目标统计；次数型达到目标才算完成。</p>`;
+}
+
 
 function renderCare() {
   const care = app.state.spaces.care;
-  addCard('心情温度', '关系不是附属模块，是系统稳定性的核心。', `<label>现在的状态<input data-field="spaces.care.mood" value="${escAttr(care.mood || '')}"></label>`);
-  addCard('鼓励与感谢', '保存那些容易被忙碌冲掉的小事。', `<div class="list">${(care.notes || []).map((note) => `<p class="item">${esc(note)}</p>`).join('')}</div><form data-form="care-note" class="action-row"><input name="note" required placeholder="今天想感谢 / 鼓励对方的一句话"><button class="mini-button">添加</button></form>`, 'wide');
+  care.notes = normalizeCareNotes(care.notes || []);
+  addCard('心情温度', '', `<label>现在的状态<input data-field="spaces.care.mood" value="${escAttr(care.mood || '')}"></label>`, 'full');
+  addCard('鼓励与感谢', '', `
+    <div class="list care-note-list">
+      ${care.notes.map((note) => `
+        <article class="item care-note-item">
+          <span>${personBadge(note.person)} ${esc(note.text || note.note || '')}</span>
+          <button class="mini-button delete-note" data-delete-care-note="${escAttr(note.id)}" aria-label="删除">删除</button>
+        </article>
+      `).join('') || '<p class="tiny">还没有记录。</p>'}
+    </div>
+    <form data-form="care-note" class="action-row"><input name="note" required placeholder="今天想感谢 / 鼓励对方的一句话"><button class="mini-button">添加</button></form>
+  `, 'full');
 }
 
 function renderLife() {
   const life = app.state.spaces.life || { todos: [] };
   const todos = life.todos || [];
-  const open = todos.filter((todo) => !todo.done).length;
+  const openTodos = todos.filter((todo) => !todo.done).sort((a, b) => todoDate(a).localeCompare(todoDate(b)));
+  const recentDone = todos
+    .filter((todo) => todo.done && String(todo.doneAt || todoDate(todo)).slice(0, 10) >= dateAdd(today(), -3))
+    .sort((a, b) => String(b.doneAt || todoDate(b)).localeCompare(String(a.doneAt || todoDate(a))));
   addCard('加一个生活待办', '不需要项目、不需要时间轴，就写一句要做什么。', `
     <form class="todo-add" data-form="life-todo">
       <input name="text" required placeholder="例如：取快递 / 买牛奶 / 订周末餐厅">
+      <input name="date" type="date" value="${today()}" aria-label="待办日期">
       <button class="primary-button">添加</button>
     </form>
-    <p class="tiny">还剩 ${open} 件小事没做。</p>
-  `, 'wide');
+    <p class="tiny">还剩 ${openTodos.length} 件小事没做。</p>
+  `, 'full');
 
   addCard('生活 Todo List', '简单一点：做完点一下就划掉。', `
-    <div class="todo-list">
-      ${todos.map((todo) => `
-        <button class="todo-row ${todo.done ? 'done' : ''}" data-life-todo="${escAttr(todo.id)}">
-          <span>${todo.done ? '✓' : ''}</span>
-          <strong>${esc(todo.text)}</strong>
-        </button>
-      `).join('') || '<p class="tiny">还没有生活待办。</p>'}
+    <div class="todo-section">
+      <div class="todo-section-head"><h3>要做</h3><span>${openTodos.length}</span></div>
+      <div class="todo-list">${openTodos.map(renderTodoRow).join('') || '<p class="tiny">现在没有待办。</p>'}</div>
+    </div>
+    <div class="todo-section done-section">
+      <div class="todo-section-head"><h3>已完成 · 近 3 天</h3><span>${recentDone.length}</span></div>
+      <div class="todo-list">${recentDone.map(renderTodoRow).join('') || '<p class="tiny">近 3 天还没有完成记录。</p>'}</div>
     </div>
   `, 'full');
+}
+
+function renderTodoRow(todo) {
+  return `
+    <button class="todo-row ${todo.done ? 'done' : ''}" data-life-todo="${escAttr(todo.id)}">
+      <span class="todo-check">${todo.done ? '✓' : ''}</span>
+      <span class="todo-owner">${personBadge(todo.person)}</span>
+      <strong>${esc(todo.text)}</strong>
+      <time>${esc(todoDate(todo))}${todo.doneBy ? ` · ${esc(personName(todo.doneBy))} 完成` : ''}</time>
+    </button>`;
+}
+
+function todoDate(todo) {
+  return todo.date || String(todo.createdAt || '').slice(0, 10) || today();
 }
 
 function renderMemories() {
@@ -366,7 +547,7 @@ function renderMemories() {
         <article class="memory-card">
           <div class="memory-date"><b>${esc(formatMemoryDay(moment.date))}</b><span>${esc(String(moment.date || '').slice(0, 4))}</span></div>
           <div>
-            <div class="item-head"><h3>${esc(moment.title)}</h3><span class="chip">${esc(moment.type || 'moment')}</span></div>
+            <div class="item-head"><h3>${personBadge(moment.person)} ${esc(moment.title)}</h3><span class="chip">${esc(moment.type || 'moment')}</span></div>
             <p>${esc(moment.detail || '')}</p>
             <div class="chip-row">
               ${moment.place ? `<span class="chip">📍 ${esc(moment.place)}</span>` : ''}
@@ -381,16 +562,16 @@ function renderMemories() {
 }
 
 function renderMentor() {
-  const mentor = app.state.spaces.mentor;
-  addCard('导师会准备', '照参考工作站：议程、材料、问题、follow-up 分开。', `
+  const mentor = personalMentor();
+  addCard('导师会准备', `${personName(currentPerson())} 的导师管理，只显示当前账号自己的记录。`, `
     <form class="form-grid" data-form="mentor-meeting">
       <label>日期<input name="date" type="date" value="${today()}"></label><label>主题<input name="topic" value="下次导师会" required></label>
       <label class="full">议程 / 材料<textarea name="agenda" placeholder="例如：进度、风险、需要导师拍板的问题"></textarea></label>
       <button class="primary-button full">新增导师会</button>
     </form>
   `, 'wide');
-  addCard('问题池', '把不确定性整理成可决策问题。', `<div class="list">${(mentor.questions || []).map((q) => `<p class="item">${esc(q)}</p>`).join('')}</div><form data-form="mentor-question" class="action-row"><input name="question" required placeholder="新增一个需要导师回答的问题"><button class="mini-button">添加</button></form>`);
-  addCard('会议与跟进', '每次会后留证据。', `<div class="list compact-list">${(mentor.meetings || []).slice().reverse().map((m) => `<article class="item"><div class="item-head"><h3>${esc(m.topic)}</h3><span class="chip">${esc(m.date || '待定')}</span></div><p>${esc(m.agenda || '')}</p></article>`).join('')}</div>`, 'full');
+  addCard('问题池', '把不确定性整理成可决策问题。', `<div class="list">${(mentor.questions || []).map((q) => `<p class="item">${personBadge(q.owner)} ${esc(q.text || q)}</p>`).join('')}</div><form data-form="mentor-question" class="action-row"><input name="question" required placeholder="新增一个需要导师回答的问题"><button class="mini-button">添加</button></form>`);
+  addCard('会议与跟进', '每次会后留证据。', `<div class="list compact-list">${(mentor.meetings || []).slice().reverse().map((m) => `<article class="item"><div class="item-head"><h3>${personBadge(m.owner)} ${esc(m.topic)}</h3><span class="chip">${esc(m.date || '待定')}</span></div><p>${esc(m.agenda || '')}</p></article>`).join('')}</div>`, 'full');
 }
 
 function renderAchievements() {
@@ -422,6 +603,7 @@ function renderDashboard() {
   addCard('本地数据库状态', '数据写入 SQLite；每次修改自动生成 latest 备份。', `<p><code>data/bwsz-space.sqlite</code></p><p><code>data/backups/bwsz-space-latest.sqlite</code></p><p class="tiny">不再需要手动备份按钮，拖拽/编辑后的保存会自动触发。</p>`);
 }
 
+
 function renderGeneric(module) {
   addCard(module.title, module.description, '<p>这个模块已经在注册表中，等待实现具体界面。</p>');
 }
@@ -449,13 +631,13 @@ function selectTaskInPlace(taskId) {
   planning.selectedTaskId = taskId;
   content.querySelectorAll('[data-select-task]').forEach((node) => node.classList.toggle('selected', node.dataset.selectTask === taskId));
   const slot = $('#taskDetailSlot');
-  if (slot) slot.innerHTML = renderTaskEditor(task, planning);
+  if (slot) slot.innerHTML = renderTaskEditor(task, { ...planning, projects: personalProjects(), tasks: personalTasks() });
 }
 
 function addCard(title, description, body, width = '') {
   const article = document.createElement('article');
   article.className = `panel-card ${width}`.trim();
-  article.innerHTML = `<div class="panel-title"><div><h2>${esc(title)}</h2><p>${esc(description || '')}</p></div></div>${body}`;
+  article.innerHTML = `<div class="panel-title"><div><h2>${esc(title)}</h2>${description ? `<p>${esc(description)}</p>` : ''}</div></div>${body}`;
   content.appendChild(article);
 }
 
@@ -464,19 +646,40 @@ function handleContentClick(event) {
   if (jump) return switchTo(jump.dataset.jump);
 
   const focusMode = event.target.closest('[data-focus-mode]');
-  if (focusMode) { app.state.spaces.focus.chartMode = focusMode.dataset.focusMode; markDirty(); return renderActive({ preserveScroll: true, quiet: true }); }
+  if (focusMode) {
+    const focus = app.state.spaces.focus;
+    focus.chartMode = focusMode.dataset.focusMode;
+    focus.chartAnchor = clampFocusAnchor(focus.chartMode, focus.chartAnchor || today());
+    markDirty();
+    return renderActive({ preserveScroll: true, quiet: true });
+  }
 
   const planningView = event.target.closest('[data-planning-view]');
   if (planningView) { app.state.spaces.planning.view = planningView.dataset.planningView; markDirty(); return renderActive({ preserveScroll: true, quiet: true }); }
 
-  const habit = event.target.closest('[data-habit]');
-  if (habit) {
-    const item = app.state.spaces.health.habits.find((candidate) => candidate.id === habit.dataset.habit);
-    if (item) item.done = !item.done;
-    habit.classList.toggle('done', Boolean(item?.done));
-    habit.textContent = `${item.done ? '✓' : '○'} ${item.title}`;
+  const healthView = event.target.closest('[data-health-view]');
+  if (healthView) { ensureHealth().view = healthView.dataset.healthView; markDirty(); return renderActive({ preserveScroll: true, quiet: true }); }
+
+  const habitAction = event.target.closest('[data-habit-action]');
+  if (habitAction) {
+    updateHabitProgress(habitAction.dataset.habitId, habitAction.dataset.habitAction);
     markDirty();
-    return;
+    return renderActive({ preserveScroll: true, quiet: true });
+  }
+
+  const deleteHabit = event.target.closest('[data-delete-habit]');
+  if (deleteHabit) {
+    deleteHealthHabit(deleteHabit.dataset.deleteHabit);
+    markDirty('已删除习惯。');
+    return renderActive({ preserveScroll: true, quiet: true });
+  }
+
+  const deleteCareNote = event.target.closest('[data-delete-care-note]');
+  if (deleteCareNote) {
+    const care = app.state.spaces.care;
+    care.notes = normalizeCareNotes(care.notes || []).filter((note) => note.id !== deleteCareNote.dataset.deleteCareNote);
+    markDirty('已删除。');
+    return renderActive({ preserveScroll: true, quiet: true });
   }
 
   const taskBlock = event.target.closest('[data-select-task]');
@@ -488,11 +691,13 @@ function handleContentClick(event) {
   const lifeTodo = event.target.closest('[data-life-todo]');
   if (lifeTodo) {
     const todo = app.state.spaces.life.todos.find((item) => item.id === lifeTodo.dataset.lifeTodo);
-    if (todo) todo.done = !todo.done;
-    lifeTodo.classList.toggle('done', Boolean(todo?.done));
-    lifeTodo.querySelector('span').textContent = todo?.done ? '✓' : '';
+    if (todo) {
+      todo.done = !todo.done;
+      todo.doneBy = todo.done ? currentPerson() : '';
+      todo.doneAt = todo.done ? new Date().toISOString() : '';
+    }
     markDirty();
-    return;
+    return renderActive({ preserveScroll: true, quiet: true });
   }
 
   const action = event.target.closest('[data-action]')?.dataset.action;
@@ -500,6 +705,8 @@ function handleContentClick(event) {
   if (action === 'start-focus') return startFocus();
   if (action === 'finish-focus') return finishFocus();
   if (action === 'cancel-focus') return cancelFocus();
+  if (action === 'focus-prev') return shiftFocusPeriod(-1);
+  if (action === 'focus-next') return shiftFocusPeriod(1);
   if (action === 'timeline-prev') return shiftTimeline(-1);
   if (action === 'timeline-next') return shiftTimeline(1);
   if (action === 'timeline-today') { app.state.spaces.planning.anchorDate = today(); markDirty(); return renderActive({ preserveScroll: true, quiet: true }); }
@@ -513,25 +720,38 @@ function handleContentSubmit(event) {
   const id = cryptoId();
 
   if (form.dataset.form === 'focus-manual') addFocusSession(data.title, `${data.date}T${data.startTime}:00`, `${data.date}T${data.endTime}:00`, 'manual', data.note);
-  if (form.dataset.form === 'project') app.state.spaces.planning.projects.push({ id, title: data.title, owner: data.owner || '共同', status: '进行中', color: pickColor(app.state.spaces.planning.projects.length), start: data.start || today(), end: ensureEnd(data.start, data.end), notes: data.notes || '' });
-  if (form.dataset.form === 'task') app.state.spaces.planning.tasks.push({ id, title: data.title, projectId: data.projectId, start: data.start || today(), end: ensureEnd(data.start, data.end), level: data.level || 'P1', done: data.done === 'true', notes: data.notes || '' });
-  if (form.dataset.form === 'task-edit') updateTask(form.dataset.taskId, { ...data, done: data.done === 'true', end: ensureEnd(data.start, data.end) });
-  if (form.dataset.form === 'paper') app.state.spaces.submissions.papers.unshift({ id, ...data });
-  if (form.dataset.form === 'health-note') { app.state.spaces.health.checkins = app.state.spaces.health.checkins || []; app.state.spaces.health.checkins.push({ id, ...data }); }
-  if (form.dataset.form === 'care-note') app.state.spaces.care.notes.unshift(data.note);
+  if (form.dataset.form === 'project') app.state.spaces.planning.projects.push({ id, title: data.title, owner: currentPerson(), status: '进行中', color: pickColor(app.state.spaces.planning.projects.length), start: data.start || today(), end: ensureEnd(data.start, data.end), notes: data.notes || '' });
+  if (form.dataset.form === 'task') app.state.spaces.planning.tasks.push({ id, title: data.title, owner: currentPerson(), projectId: data.projectId, start: data.start || today(), end: ensureEnd(data.start, data.end), level: data.level || 'P1', done: false, notes: data.notes || '' });
+  if (form.dataset.form === 'task-edit') updateTask(form.dataset.taskId, { ...data, owner: currentPerson(), done: data.done === 'true', end: ensureEnd(data.start, data.end) });
+  if (form.dataset.form === 'paper') app.state.spaces.submissions.papers.unshift({ id, owner: currentPerson(), ...data });
+  if (form.dataset.form === 'health-note') { app.state.spaces.health.checkins = app.state.spaces.health.checkins || []; app.state.spaces.health.checkins.push({ id, person: currentPerson(), ...data }); }
+  if (form.dataset.form === 'health-habit-add') {
+    const health = ensureHealth();
+    const kind = data.kind === 'count' ? 'count' : 'check';
+    health.habits.push({ id, title: data.title, kind, target: kind === 'count' ? Math.max(1, Number(data.target || 1)) : 1, doneBy: { bw: false, sz: false } });
+  }
+  if (form.dataset.form === 'health-habit-edit') {
+    const health = ensureHealth();
+    const habit = health.habits.find((item) => item.id === form.dataset.habitId);
+    if (habit) {
+      habit.title = data.title || habit.title;
+      habit.kind = data.kind === 'count' ? 'count' : 'check';
+      habit.target = habit.kind === 'count' ? Math.max(1, Number(data.target || 1)) : 1;
+    }
+  }
+  if (form.dataset.form === 'care-note') app.state.spaces.care.notes.unshift({ id, person: currentPerson(), text: data.note });
   if (form.dataset.form === 'life-todo') {
     app.state.spaces.life = app.state.spaces.life || { todos: [] };
-    app.state.spaces.life.todos.unshift({ id, text: data.text, done: false });
+    app.state.spaces.life.todos.unshift({ id, person: currentPerson(), text: data.text, date: data.date || today(), createdAt: new Date().toISOString(), done: false, doneBy: '', doneAt: '' });
   }
   if (form.dataset.form === 'memory') {
     app.state.spaces.memories = app.state.spaces.memories || { moments: [] };
-    app.state.spaces.memories.moments.unshift({ id, ...data, tags: splitTags(data.tags) });
+    app.state.spaces.memories.moments.unshift({ id, person: currentPerson(), ...data, tags: splitTags(data.tags) });
   }
-  if (form.dataset.form === 'mentor-question') app.state.spaces.mentor.questions.unshift(data.question);
-  if (form.dataset.form === 'mentor-meeting') app.state.spaces.mentor.meetings.unshift({ id, ...data });
-  if (form.dataset.form === 'badge-task') app.state.spaces.achievements.badgeTasks.push({ id, title: data.title, target: Number(data.target || 1), progress: 0, awarded: false });
-  if (form.dataset.form === 'achievement') app.state.spaces.achievements.items.unshift({ id, level: 'manual', ...data });
-
+  if (form.dataset.form === 'mentor-question') app.state.spaces.mentor.questions.unshift({ id, owner: currentPerson(), text: data.question });
+  if (form.dataset.form === 'mentor-meeting') app.state.spaces.mentor.meetings.unshift({ id, owner: currentPerson(), ...data });
+  if (form.dataset.form === 'badge-task') app.state.spaces.achievements.badgeTasks.push({ id, person: currentPerson(), title: data.title, target: Number(data.target || 1), progress: 0, awarded: false });
+  if (form.dataset.form === 'achievement') app.state.spaces.achievements.items.unshift({ id, person: currentPerson(), level: 'manual', ...data });
   markDirty('已自动保存到本地数据库。');
   renderActive({ preserveScroll: true, quiet: true });
 }
@@ -543,9 +763,10 @@ function handleContentInput(event) {
   markDirty();
 }
 
+
 function startFocus() {
   const title = $('#focusTitle')?.value?.trim() || '专注';
-  app.state.spaces.focus.active = { id: cryptoId(), title, startedAt: new Date().toISOString() };
+  app.state.spaces.focus.active = { id: cryptoId(), person: currentPerson(), title, startedAt: new Date().toISOString() };
   markDirty('专注开始。');
   renderActive({ preserveScroll: true, quiet: true });
   startFocusTicker();
@@ -566,7 +787,7 @@ function cancelFocus() {
 }
 function addFocusSession(title, start, end, source, note = '') {
   const minutes = Math.max(1, Math.round((new Date(end) - new Date(start)) / 60000));
-  app.state.spaces.focus.sessions.push({ id: cryptoId(), title, start, end, minutes, source, note });
+  app.state.spaces.focus.sessions.push({ id: cryptoId(), person: currentPerson(), title, start, end, minutes, source, note });
 }
 function startFocusTicker() {
   clearInterval(app.focusTick);
@@ -582,8 +803,9 @@ function renderTimeline(planning) {
   const range = timelineRange(planning.view, planning.anchorDate);
   const days = enumerateDays(range.start, range.days);
   const rows = planning.projects.concat([{ id: '', title: '临时任务', color: '#9b5de5', owner: '共同' }]);
-  const labelWidth = 180;
-  const dayWidth = planning.view === 'month' ? 72 : planning.view === 'week' ? 112 : 160;
+  const compactTimeline = window.matchMedia('(max-width: 760px)').matches;
+  const labelWidth = compactTimeline ? 86 : 180;
+  const dayWidth = planning.view === 'month' ? (compactTimeline ? 48 : 72) : (compactTimeline ? 78 : 112);
   const daysWidth = days.length * dayWidth;
   const width = labelWidth + daysWidth;
   const gridTemplate = `${labelWidth}px repeat(${days.length}, ${dayWidth}px)`;
@@ -740,42 +962,174 @@ function shiftTimeline(direction) {
 function updateTask(id, patch) { const task = app.state.spaces.planning.tasks.find((item) => item.id === id); if (task) Object.assign(task, patch); }
 
 async function saveState(immediate = false) {
-  if (!app.state || app.saving) return;
+  if (!app.state) return;
+  if (app.saving) {
+    app.saveQueued = true;
+    return;
+  }
   clearTimeout(app.saveTimer);
   const run = async () => {
     app.saving = true;
+    app.saveQueued = false;
     try {
+      ensurePeople();
       app.state = await api.save(app.state);
-      app.dirty = false;
+      ensurePeople();
+          app.dirty = false;
       $('#saveBtn').textContent = '自动保存已完成';
     } catch (error) {
       $('#saveBtn').textContent = '自动保存失败';
       toast(error.message);
     } finally {
       app.saving = false;
+      if (app.saveQueued || app.dirty) saveState(true);
     }
   };
   if (immediate) return run();
   app.saveTimer = setTimeout(run, 550);
 }
-function markDirty(message) {
+function markDirty(message, immediate = false) {
   app.dirty = true;
   $('#saveBtn').textContent = '自动保存中…';
-  saveState();
+  saveState(immediate);
   if (message) toast(message);
 }
-async function showBackupInfo() {
-  try {
-    const backups = await api.backups();
-    toast(`最近备份：${backups[0]?.createdAt ? formatDateTime(backups[0].createdAt) : '尚无记录'}`);
-  } catch (error) { toast(error.message); }
+
+function focusByPerson() {
+  const todayKey = today();
+  return (app.state.spaces.focus.sessions || []).reduce((acc, session) => {
+    if (session.start?.slice(0, 10) === todayKey) acc[session.person === 'sz' ? 'sz' : 'bw'] += Number(session.minutes || 0);
+    return acc;
+  }, { bw: 0, sz: 0 });
+}
+
+function normalizeCareNotes(notes) {
+  return (notes || []).map((note) => {
+    if (typeof note === 'string') return { id: cryptoId(), text: note, person: currentPerson() };
+    return { id: note.id || cryptoId(), text: note.text || note.note || '', person: note.person || currentPerson() };
+  });
+}
+
+function ensureHealth() {
+  const spaces = app.state.spaces;
+  spaces.health = spaces.health || {};
+  const health = spaces.health;
+  health.habits = Array.isArray(health.habits) ? health.habits : [];
+  health.checkins = Array.isArray(health.checkins) ? health.checkins : [];
+  health.habitLogs = health.habitLogs && typeof health.habitLogs === 'object' ? health.habitLogs : {};
+  health.view = health.view || 'week';
+  const todayKey = today();
+  health.habitLogs[todayKey] = health.habitLogs[todayKey] || {};
+  health.habits.forEach((habit) => {
+    habit.id = habit.id || cryptoId();
+    habit.title = habit.title || '健康习惯';
+    if (!habit.kind) habit.kind = inferHabitKind(habit);
+    habit.target = habitTarget(habit);
+    if (!health.habitLogs[todayKey][habit.id]) {
+      health.habitLogs[todayKey][habit.id] = {
+        bw: habit.doneBy?.bw ? habit.target : 0,
+        sz: habit.doneBy?.sz ? habit.target : 0
+      };
+    }
+    habit.doneBy = {
+      bw: habitValue(habit, 'bw', todayKey) >= habit.target,
+      sz: habitValue(habit, 'sz', todayKey) >= habit.target
+    };
+  });
+  return health;
+}
+
+function inferHabitKind(habit) {
+  if (Number(habit.target || 0) > 1) return 'count';
+  if (/饮水|杯|次|护眼|拉伸|番茄/.test(habit.title || '')) return 'count';
+  return 'check';
+}
+
+function habitTarget(habit) {
+  if (habit.kind === 'count') return Math.max(1, Number(habit.target || inferTargetFromTitle(habit.title) || 1));
+  return 1;
+}
+
+function inferTargetFromTitle(title = '') {
+  if (/饮水/.test(title)) return 6;
+  if (/护眼|拉伸/.test(title)) return 3;
+  const match = String(title).match(/(\d+)/);
+  return match ? Number(match[1]) : 1;
+}
+
+function healthLog(day, habitId) {
+  const health = app.state.spaces.health;
+  health.habitLogs = health.habitLogs || {};
+  health.habitLogs[day] = health.habitLogs[day] || {};
+  health.habitLogs[day][habitId] = health.habitLogs[day][habitId] || { bw: 0, sz: 0 };
+  return health.habitLogs[day][habitId];
+}
+
+function habitValue(habit, person, day = today()) {
+  const log = app.state?.spaces?.health?.habitLogs?.[day]?.[habit.id];
+  return Number(log?.[person === 'sz' ? 'sz' : 'bw'] || 0);
+}
+
+function setHabitValue(habit, person, value, day = today()) {
+  const target = habitTarget(habit);
+  const log = healthLog(day, habit.id);
+  const key = person === 'sz' ? 'sz' : 'bw';
+  log[key] = clamp(Number(value) || 0, 0, habit.kind === 'count' ? Math.max(target, Number(value) || 0) : 1);
+  habit.doneBy = habit.doneBy || { bw: false, sz: false };
+  habit.doneBy[key] = log[key] >= target;
+}
+
+function updateHabitProgress(habitId, action) {
+  const health = ensureHealth();
+  const habit = health.habits.find((item) => item.id === habitId);
+  if (!habit) return;
+  const person = currentPerson();
+  const current = habitValue(habit, person);
+  if (action === 'toggle') setHabitValue(habit, person, current >= habitTarget(habit) ? 0 : habitTarget(habit));
+  if (action === 'increment') setHabitValue(habit, person, current + 1);
+  if (action === 'decrement') setHabitValue(habit, person, current - 1);
+}
+
+function deleteHealthHabit(habitId) {
+  const health = ensureHealth();
+  health.habits = health.habits.filter((habit) => habit.id !== habitId);
+  Object.values(health.habitLogs || {}).forEach((dayLog) => {
+    if (dayLog && typeof dayLog === 'object') delete dayLog[habitId];
+  });
+}
+
+function healthRecordDays(mode) {
+  if (mode === 'month') {
+    const base = parseDate(today());
+    return enumerateDays(firstDayOfMonth(base), daysInMonth(base));
+  }
+  if (mode === 'week') return enumerateDays(startOfWeek(parseDate(today())), 7);
+  return [today()];
+}
+
+function healthDaySummary(day) {
+  const health = ensureHealth();
+  const perPerson = health.habits.length;
+  const people = { bw: 0, sz: 0 };
+  health.habits.forEach((habit) => {
+    for (const person of ['bw', 'sz']) {
+      if (habitValue(habit, person, day) >= habitTarget(habit)) people[person] += 1;
+    }
+  });
+  return { people, perPerson, done: people.bw + people.sz, total: perPerson * 2 };
+}
+
+function healthDayTitle(day, mode) {
+  if (mode === 'month') return String(Number(day.slice(-2)));
+  const d = parseDate(day);
+  return mode === 'week' ? `${['周一','周二','周三','周四','周五','周六','周日'][(d.getDay() || 7) - 1]} ${day.slice(5)}` : day;
 }
 
 function collectMetrics() {
   const focus = app.state.spaces.focus.sessions || [];
   const planning = app.state.spaces.planning;
-  const habits = app.state.spaces.health.habits || [];
   const todayKey = today();
+  const healthToday = healthDaySummary(todayKey);
   const week = timelineRange('week', todayKey);
   const weekEnd = dateAdd(week.start, week.days - 1);
   return {
@@ -784,21 +1138,155 @@ function collectMetrics() {
     openTasks: planning.tasks.filter((task) => !task.done).length,
     doneTasks: planning.tasks.filter((task) => task.done).length,
     totalTasks: planning.tasks.length,
-    healthDone: habits.filter((habit) => habit.done).length,
-    healthTotal: habits.length,
+    healthDone: healthToday.done,
+    healthTotal: healthToday.total,
     mentorOpen: (app.state.spaces.mentor.questions || []).length,
     badges: achievementCatalog().filter((badge) => badge.awarded).length + (app.state.spaces.achievements.items || []).length
   };
 }
 function focusStats(mode) {
-  const sessions = app.state.spaces.focus.sessions || [];
-  const days = mode === 'month' ? 30 : mode === 'week' ? 7 : 1;
-  const labels = enumerateDays(dateAdd(today(), -(days - 1)), days);
-  const bars = labels.map((day) => ({ label: mode === 'day' ? '今天' : day.slice(5), value: sessions.filter((s) => s.start.slice(0, 10) === day).reduce((sum, s) => sum + Number(s.minutes || 0), 0) }));
-  const total = bars.reduce((sum, bar) => sum + bar.value, 0);
-  return { bars, total, avg: Math.round(total / Math.max(1, bars.length)), max: Math.max(30, ...bars.map((bar) => bar.value)) };
+  return focusPeriodStats(mode, today());
 }
-function renderBars(bars, max) { return `<div class="bar-chart">${bars.map((bar) => `<div class="bar-item"><div class="bar-track"><span style="height:${Math.round((bar.value / max) * 100)}%"></span></div><b>${bar.value}</b><small>${esc(bar.label)}</small></div>`).join('')}</div>`; }
+function focusPeriodStats(mode, anchor) {
+  const days = focusPeriodDays(mode, anchor);
+  const bars = days.map((day) => {
+    const people = focusMinutesByPersonForDate(day);
+    const total = people.bw + people.sz;
+    return { day, label: focusDayLabel(day, mode), people, total };
+  });
+  const total = bars.reduce((sum, bar) => sum + bar.total, 0);
+  return { bars, total, avg: Math.round(total / Math.max(1, bars.length)), max: Math.max(30, ...bars.map((bar) => bar.total)) };
+}
+function focusPeriodDays(mode, anchor) {
+  const base = parseDate(clampFocusAnchor(mode, anchor || today()));
+  if (mode === 'month') return enumerateDays(firstDayOfMonth(base), daysInMonth(base));
+  if (mode === 'week') return enumerateDays(startOfWeek(base), 7);
+  return [toDateKey(base)];
+}
+function focusMinutesByPersonForDate(day) {
+  return (app.state.spaces.focus.sessions || []).reduce((acc, session) => {
+    if (session.start?.slice(0, 10) === day) acc[session.person === 'sz' ? 'sz' : 'bw'] += Number(session.minutes || 0);
+    return acc;
+  }, { bw: 0, sz: 0 });
+}
+function renderFocusChart(mode, anchor, stats = focusPeriodStats(mode, anchor)) {
+  const safeAnchor = clampFocusAnchor(mode, anchor || today());
+  const nextDisabled = !canShiftFocusPeriod(mode, safeAnchor, 1);
+  return `
+    <div class="focus-chart" data-swipe-period="focus">
+      <div class="focus-chart-top">
+        <div class="segmented">
+          ${['day','week','month'].map((item) => `<button class="${mode === item ? 'active' : ''}" data-focus-mode="${item}">${modeLabel(item)}</button>`).join('')}
+        </div>
+        <div class="focus-period-nav">
+          <button class="mini-button" data-action="focus-prev" aria-label="上一段">←</button>
+          <strong>${focusPeriodLabel(mode, safeAnchor)}</strong>
+          <button class="mini-button" data-action="focus-next" ${nextDisabled ? 'disabled' : ''} aria-label="下一段">→</button>
+        </div>
+      </div>
+      ${focusLegend()}
+      ${mode === 'month' ? renderFocusMonth(stats.bars, safeAnchor, stats.max) : mode === 'week' ? renderFocusWeek(stats.bars, stats.max) : renderFocusDay(stats.bars[0], stats.max)}
+    </div>`;
+}
+function renderFocusDay(bar, max) {
+  const total = bar?.total || 0;
+  return `
+    <div class="focus-day-view">
+      <div class="focus-day-stack" aria-label="${escAttr(bar?.label || '')} 专注 ${total} 分钟">${focusStackSegments(bar?.people || { bw: 0, sz: 0 }, max, 'width')}</div>
+      <div class="focus-day-meta"><b>${total}</b><span>分钟 · ${esc(bar?.label || '')}</span></div>
+    </div>`;
+}
+function renderFocusWeek(bars, max) {
+  return `<div class="focus-week-chart">${bars.map((bar) => `
+    <div class="focus-week-item">
+      <div class="focus-week-track">${focusStackSegments(bar.people, max, 'height')}</div>
+      <b>${bar.total}</b><small>${esc(bar.label)}</small>
+    </div>`).join('')}</div>`;
+}
+function renderFocusMonth(bars, anchor, max) {
+  const first = parseDate(firstDayOfMonth(parseDate(anchor)));
+  const leading = (first.getDay() || 7) - 1;
+  return `<div class="focus-month-wrap">
+    <div class="focus-month-grid">
+      ${['一','二','三','四','五','六','日'].map((label) => `<div class="focus-month-weekday">${label}</div>`).join('')}
+      ${Array.from({ length: leading }, () => '<div class="focus-month-cell empty"></div>').join('')}
+      ${bars.map((bar) => `
+        <div class="focus-month-cell ${bar.day === today() ? 'today' : ''}">
+          <div class="focus-month-date"><span>${Number(bar.day.slice(-2))}</span>${bar.total ? `<b>${bar.total}</b>` : ''}</div>
+          <div class="focus-month-stack">${focusStackSegments(bar.people, max, 'width')}</div>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+function focusStackSegments(people, max, axis) {
+  const safeMax = Math.max(1, max);
+  return ['bw', 'sz'].map((person) => {
+    const value = Number(people?.[person] || 0);
+    const size = value ? Math.max(4, Math.round((value / safeMax) * 100)) : 0;
+    const prop = axis === 'width' ? 'width' : 'height';
+    return `<span data-person="${escAttr(person)}" title="${escAttr(personName(person))}: ${value} 分钟" style="${prop}:${size}%"></span>`;
+  }).join('');
+}
+function focusLegend() {
+  return `<div class="focus-legend">${['bw','sz'].map((person) => `<span><i data-person="${escAttr(person)}"></i>${esc(personName(person))}</span>`).join('')}</div>`;
+}
+function shiftFocusPeriod(direction) {
+  const focus = app.state.spaces.focus;
+  const mode = focus.chartMode || 'week';
+  if (direction > 0 && !canShiftFocusPeriod(mode, focus.chartAnchor || today(), direction)) return;
+  focus.chartAnchor = clampFocusAnchor(mode, focusShiftedAnchor(mode, focus.chartAnchor || today(), direction));
+  markDirty();
+  renderActive({ preserveScroll: true, quiet: true });
+}
+
+function handleSwipePointerDown(event) {
+  const scope = event.target.closest('[data-swipe-period]');
+  if (!scope || event.target.closest('button, input, select, textarea, a')) return;
+  app.swipe = { scope: scope.dataset.swipePeriod, startX: event.clientX, startY: event.clientY };
+}
+
+function handleSwipePointerUp(event) {
+  if (!app.swipe) return;
+  const swipe = app.swipe;
+  app.swipe = null;
+  const dx = event.clientX - swipe.startX;
+  const dy = event.clientY - swipe.startY;
+  if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+  if (swipe.scope === 'focus') shiftFocusPeriod(dx < 0 ? 1 : -1);
+}
+
+function canShiftFocusPeriod(mode, anchor, direction) {
+  if (direction <= 0) return true;
+  const next = focusShiftedAnchor(mode, anchor || today(), direction);
+  return focusPeriodStart(mode, next) <= focusPeriodStart(mode, today());
+}
+function focusShiftedAnchor(mode, anchor, direction) {
+  const base = parseDate(anchor || today());
+  if (mode === 'month') return toDateKey(new Date(base.getFullYear(), base.getMonth() + direction, 1));
+  return dateAdd(toDateKey(base), direction * (mode === 'week' ? 7 : 1));
+}
+function clampFocusAnchor(mode, anchor) {
+  const value = anchor || today();
+  return focusPeriodStart(mode, value) > focusPeriodStart(mode, today()) ? today() : value;
+}
+function focusPeriodStart(mode, anchor) {
+  const base = parseDate(anchor || today());
+  if (mode === 'month') return firstDayOfMonth(base);
+  if (mode === 'week') return startOfWeek(base);
+  return toDateKey(base);
+}
+function focusPeriodLabel(mode, anchor) {
+  const days = focusPeriodDays(mode, anchor);
+  if (mode === 'month') return days[0].slice(0, 7);
+  if (mode === 'week') return `${days[0].slice(5)} - ${days.at(-1).slice(5)}`;
+  return days[0];
+}
+function focusDayLabel(day, mode) {
+  const d = parseDate(day);
+  if (mode === 'week') return ['周一','周二','周三','周四','周五','周六','周日'][(d.getDay() || 7) - 1];
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+function renderBars(bars, max) { return `<div class="bar-chart">${bars.map((bar) => { const value = bar.value ?? bar.total ?? 0; return `<div class="bar-item"><div class="bar-track"><span style="height:${Math.round((value / max) * 100)}%"></span></div><b>${value}</b><small>${esc(bar.label)}</small></div>`; }).join('')}</div>`; }
 function peakHour(sessions) {
   const hours = Array.from({ length: 24 }, () => 0);
   sessions.forEach((session) => { hours[new Date(session.start).getHours()] += Number(session.minutes || 0); });
@@ -819,8 +1307,8 @@ function achievementCatalog() {
 function collectMetricsRaw() {
   const focusToday = (app.state.spaces.focus.sessions || []).filter((s) => s.start.slice(0, 10) === today()).reduce((sum, s) => sum + Number(s.minutes || 0), 0);
   const tasks = app.state.spaces.planning.tasks || [];
-  const habits = app.state.spaces.health.habits || [];
-  return { focusToday, doneTasks: tasks.filter((task) => task.done).length, healthDone: habits.filter((h) => h.done).length, healthTotal: habits.length, mentorQuestions: (app.state.spaces.mentor.questions || []).length };
+  const healthToday = healthDaySummary(today());
+  return { focusToday, doneTasks: tasks.filter((task) => task.done).length, healthDone: healthToday.done, healthTotal: healthToday.total, mentorQuestions: (app.state.spaces.mentor.questions || []).length };
 }
 function autoAwardBadges() {
   const achievements = app.state.spaces.achievements;
@@ -841,9 +1329,29 @@ function areaList() {
 }
 
 function ensureModuleAreas() {
+  app.state.modules = Array.isArray(app.state.modules) ? app.state.modules.filter((module) => module.key !== 'settings') : [];
+  for (const module of defaultModules()) {
+    if (!app.state.modules.some((item) => item.key === module.key)) app.state.modules.push({ ...module });
+  }
   app.state.modules.forEach((module) => {
-    module.area = module.area || moduleArea(module.key);
+    module.area = moduleArea(module.key);
   });
+}
+
+function defaultModules() {
+  return [
+    { key: 'home', area: 'research', title: '科研总览', icon: '⌂', accent: '#ff8c42', description: '' },
+    { key: 'focus', area: 'research', title: '专注定时', icon: '◴', accent: '#ff6b8b', description: '' },
+    { key: 'planning', area: 'research', title: '项目与日程', icon: '▦', accent: '#4d9de0', description: '' },
+    { key: 'submissions', area: 'research', title: '投稿管理', icon: '✉', accent: '#9b5de5', description: '' },
+    { key: 'mentor', area: 'research', title: '向上管理导师', icon: '☉', accent: '#6878c8', description: '' },
+    { key: 'dashboard', area: 'research', title: '数据看板', icon: '▧', accent: '#3e8795', description: '' },
+    { key: 'achievements', area: 'research', title: '成就殿堂', icon: '★', accent: '#f9c74f', description: '' },
+    { key: 'life', area: 'life', title: '生活待办', icon: '✓', accent: '#a7c957', description: '' },
+    { key: 'health', area: 'life', title: '健康管理', icon: '♥', accent: '#43aa8b', description: '' },
+    { key: 'care', area: 'life', title: '心灵关怀', icon: '✦', accent: '#f9c74f', description: '' },
+    { key: 'memories', area: 'life', title: '我们的记忆', icon: '♡', accent: '#ff6b8b', description: '' }
+  ];
 }
 
 function modulesForArea(area) {
@@ -854,6 +1362,74 @@ function modulesForArea(area) {
 function moduleArea(key) {
   if (['life', 'health', 'care', 'memories'].includes(key)) return 'life';
   return 'research';
+}
+
+
+function ensurePeople() {
+  app.state.people = app.state.people || {};
+  app.state.people.bw = { id: 'bw', name: 'BW', color: '#ff8c42', avatar: '/assets/dog.jpg', ...(app.state.people.bw || {}) };
+  app.state.people.sz = { id: 'sz', name: 'SZ', color: '#4d9de0', avatar: '/assets/dog.jpg', ...(app.state.people.sz || {}) };
+}
+
+
+function currentPerson() {
+  const value = String(app.user?.person || app.user?.username || '').toLowerCase();
+  return value === 'sz' ? 'sz' : 'bw';
+}
+
+function personConfig(person) {
+  ensurePeople();
+  return app.state.people[person === 'sz' ? 'sz' : 'bw'];
+}
+
+function personName(person) {
+  return personConfig(person).name;
+}
+
+function personAvatar(person) {
+  return personConfig(person).avatar || '/assets/dog.jpg';
+}
+
+function personBadge(person) {
+  const key = person === 'sz' ? 'sz' : 'bw';
+  return `<span class="person-badge" data-person="${escAttr(key)}">${esc(personName(key))}</span>`;
+}
+
+function personMini(person, done) {
+  const key = person === 'sz' ? 'sz' : 'bw';
+  return `<span class="person-mini ${done ? 'done' : ''}" data-person="${escAttr(key)}">${esc(personName(key))}${done ? '✓' : ''}</span>`;
+}
+
+
+
+function updateIdentityChrome() {
+  if (!app.state) return;
+  ensurePeople();
+  const avatar = document.querySelector('.profile-avatar');
+  if (avatar) avatar.src = personAvatar(currentPerson());
+  const subtitle = document.querySelector('.side-head span');
+  if (subtitle) subtitle.textContent = `当前身份：${personName(currentPerson())}`;
+}
+
+function personalProjects() {
+  return (app.state.spaces.planning.projects || []).filter((item) => (item.owner || 'bw') === currentPerson());
+}
+
+function personalTasks() {
+  return (app.state.spaces.planning.tasks || []).filter((item) => (item.owner || 'bw') === currentPerson());
+}
+
+function personalPapers() {
+  return (app.state.spaces.submissions.papers || []).filter((item) => (item.owner || 'bw') === currentPerson());
+}
+
+function personalMentor() {
+  const mentor = app.state.spaces.mentor;
+  return {
+    meetings: (mentor.meetings || []).filter((item) => (item.owner || 'bw') === currentPerson()),
+    questions: (mentor.questions || []).filter((item) => (item.owner || 'bw') === currentPerson()),
+    followups: (mentor.followups || []).filter((item) => (item.owner || 'bw') === currentPerson())
+  };
 }
 
 function timelineRange(view, anchor) {
@@ -885,7 +1461,7 @@ function modeLabel(mode) { return ({ day: '日', week: '周', month: '月' })[mo
 function formatSeconds(seconds) { const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); const s = seconds % 60; return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; }
 function formatDateTime(value) { return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value)); }
 function formatTime(value) { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value)); }
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return toDateKey(new Date()); }
 function pickColor(index) { return ['#ff8c42', '#4d9de0', '#43aa8b', '#ff6b8b', '#9b5de5', '#f9c74f'][index % 6]; }
 function splitTags(value) { return String(value || '').split(/[,，]/).map((tag) => tag.trim()).filter(Boolean); }
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }

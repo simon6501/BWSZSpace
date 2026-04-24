@@ -3,10 +3,10 @@ const path = require('path');
 const crypto = require('crypto');
 
 const password = process.argv[2];
-const username = process.argv[3] || 'bwsz';
+const username = process.argv[3] || 'bw';
 
-if (!password || password.length < 8) {
-  console.error('Usage: node scripts/set_password.js <new-password-at-least-8-chars> [username]');
+if (!password || password.length < 6) {
+  console.error('Usage: node scripts/set_password.js <new-password-at-least-6-chars> [username]');
   process.exit(1);
 }
 
