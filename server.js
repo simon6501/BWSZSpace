@@ -10,6 +10,7 @@ loadEnv();
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const ASSETS_DIR = path.join(ROOT, 'assests');
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const DB_FILE = path.join(DATA_DIR, 'bwsz-space.sqlite');
@@ -123,6 +124,7 @@ async function handleRequest(req, res) {
       return sendJson(res, 404, { error: 'API_NOT_FOUND' });
     }
 
+    if (pathname.startsWith('/assests/')) return serveAsset(req, res, pathname);
     return serveStatic(req, res, pathname);
   } catch (error) {
     console.error(error);
@@ -257,6 +259,23 @@ async function serveStatic(req, res, pathname) {
     const index = path.join(PUBLIC_DIR, 'index.html');
     res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
     return fs.createReadStream(index).pipe(res);
+  }
+}
+
+async function serveAsset(req, res, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED' });
+  const relative = pathname.replace(/^\/assests\//, '');
+  const filePath = path.join(ASSETS_DIR, relative);
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(ASSETS_DIR)) return sendJson(res, 403, { error: 'FORBIDDEN' });
+  try {
+    const ext = path.extname(filePath).toLowerCase();
+    await fsp.stat(resolved);
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=3600' });
+    if (req.method === 'HEAD') return res.end();
+    return fs.createReadStream(resolved).pipe(res);
+  } catch {
+    return sendJson(res, 404, { error: 'ASSET_NOT_FOUND' });
   }
 }
 

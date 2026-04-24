@@ -11,7 +11,9 @@
     "server:start": "./scripts/start_server.sh",
     "server:stop": "./scripts/stop_server.sh",
     "server:status": "./scripts/status_server.sh",
-    "server:logs": "./scripts/tail_server_log.sh"
+    "server:logs": "./scripts/tail_server_log.sh",
+    "cloudflared:install": "./scripts/install_cloudflared_local.sh",
+    "tunnel:temp": "./scripts/start_tunnel_temp.sh"
   },
   "engines": {
     "node": ">=20"

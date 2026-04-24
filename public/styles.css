@@ -80,6 +80,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .9em; }
   background: var(--surface);
   box-shadow: var(--shadow);
   backdrop-filter: blur(24px) saturate(1.18);
+  text-align: center;
 }
 
 .brand-mark {
@@ -102,6 +103,26 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .9em; }
   font-size: .78rem;
 }
 
+.login-avatar {
+  width: 118px;
+  height: 118px;
+  object-fit: cover;
+  border-radius: 34px;
+  border: 5px solid rgba(255,255,255,.86);
+  box-shadow: 0 22px 46px rgba(77,87,115,.18);
+  margin: 0 auto 22px;
+}
+
+.profile-avatar {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 3px solid rgba(255,255,255,.86);
+  box-shadow: 0 12px 26px rgba(77,87,115,.16);
+}
+
 .eyebrow {
   margin: 18px 0 8px;
   color: var(--brick);
@@ -114,7 +135,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .9em; }
 h1, h2, h3, p { margin-top: 0; }
 
 .login-card h1 {
-  margin-bottom: 12px;
+  margin-bottom: 24px;
   font-size: clamp(2.1rem, 6vw, 3.7rem);
   line-height: .94;
   letter-spacing: -.06em;

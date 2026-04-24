@@ -7,3 +7,4 @@ data/*.sqlite-shm
 data/*.sqlite-wal
 data/backups/
 .DS_Store
+bin/

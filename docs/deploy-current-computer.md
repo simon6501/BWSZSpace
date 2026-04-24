@@ -127,3 +127,31 @@ data/backups/bwsz-space-latest.sqlite
 ```
 
 Still back up the whole `data/` directory periodically, especially before system updates.
+
+## 6. Install cloudflared locally in this project
+
+If `cloudflared` is not installed globally, install it into `./bin/cloudflared`:
+
+```bash
+npm run cloudflared:install
+```
+
+Then start a temporary public tunnel:
+
+```bash
+npm run tunnel:temp
+```
+
+Copy the generated `https://*.trycloudflare.com` URL and open it from mobile data.
+
+Cloudflare's official docs describe quick tunnels as a way to expose local development services with:
+
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+
+For this app, the local service is:
+
+```text
+http://127.0.0.1:3077
+```

@@ -10,29 +10,26 @@
   <div class="ambient ambient-one"></div>
   <div class="ambient ambient-two"></div>
 
-  <main id="loginView" class="login-shell hidden" aria-live="polite">
-    <section class="login-card">
-      <div class="brand-mark">B&S</div>
-      <p class="eyebrow">本地优先 · 私密空间</p>
-      <h1>BW&SZ's space</h1>
-      <p class="login-copy">给两个工程博士的共同基地：科研、论文、健康、关系和长期计划，都收在一个可以继续生长的空间里。</p>
-      <form id="loginForm" class="login-form">
-        <label>用户名<input id="username" autocomplete="username" required placeholder="bwsz"></label>
-        <label>密码<input id="password" type="password" autocomplete="current-password" required placeholder="本地密码"></label>
-        <button type="submit">进入空间</button>
-        <p id="loginMessage" class="form-message" role="alert"></p>
-      </form>
-      <p class="tiny">第一次启动默认账号见终端输出；正式上线前请在 .env 中更换强密码和 SESSION_SECRET。</p>
-    </section>
-  </main>
+	  <main id="loginView" class="login-shell hidden" aria-live="polite">
+	    <section class="login-card">
+	      <img class="login-avatar" src="/assets/dog.jpg" alt="BW&SZ avatar">
+	      <h1>BW&SZ's space</h1>
+	      <form id="loginForm" class="login-form">
+	        <label>用户名<input id="username" autocomplete="username" required placeholder="bwsz"></label>
+	        <label>密码<input id="password" type="password" autocomplete="current-password" required placeholder="本地密码"></label>
+	        <button type="submit">进入空间</button>
+	        <p id="loginMessage" class="form-message" role="alert"></p>
+	      </form>
+	    </section>
+	  </main>
 
   <div id="appView" class="app-shell hidden">
     <aside class="sidebar">
       <div class="side-head">
-        <div class="brand-mark small">B&S</div>
+        <img class="profile-avatar" src="/assets/dog.jpg" alt="BW&SZ avatar">
         <div>
           <strong>BW&SZ's space</strong>
-          <span>Engineering PhD homebase</span>
+          <span>Two PhDs</span>
         </div>
       </div>
       <div class="time-card">
@@ -47,7 +44,7 @@
     <section class="workspace">
       <header class="hero-card">
         <div>
-          <p class="eyebrow">两个人的工程化生活系统</p>
+          <p class="eyebrow">我们的小窝</p>
           <h1 id="heroTitle">BW&SZ's space</h1>
           <p id="heroSubtitle">两个工程博士的生活、科研与长期主义基地</p>
         </div>
