@@ -1,0 +1,14 @@
+[Unit]
+Description=BW&SZ Space current-computer server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/BWSZWeb
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target

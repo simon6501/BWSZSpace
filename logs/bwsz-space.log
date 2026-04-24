@@ -1,0 +1,5 @@
+
+> bwsz-space@0.1.0 start
+> node --no-warnings server.js
+
+Failed to start BW&SZ's space on 127.0.0.1:3077: listen EPERM: operation not permitted 127.0.0.1:3077

@@ -1,0 +1,19 @@
+{
+  "name": "bwsz-space",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BW&SZ's space - 本地优先的情侣工程博士工作台",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "dev": "node --no-warnings --watch server.js",
+    "check": "node --check server.js && node --check public/app.js",
+    "server:start": "./scripts/start_server.sh",
+    "server:stop": "./scripts/stop_server.sh",
+    "server:status": "./scripts/status_server.sh",
+    "server:logs": "./scripts/tail_server_log.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
