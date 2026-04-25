@@ -1737,3 +1737,175 @@ button.chip:hover,
   .timeline-task strong { font-size: .78rem; }
   .timeline-task small { font-size: .66rem; }
 }
+
+/* Final mobile guard: keep touch devices from rendering the desktop canvas. */
+@media (max-width: 900px), (pointer: coarse) {
+  html,
+  body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+    scrollbar-gutter: auto;
+  }
+
+  .app-shell {
+    width: 100%;
+    max-width: 100vw;
+    min-height: 100dvh;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin: 0;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+
+  .sidebar {
+    position: static;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    min-width: 0;
+    padding: 10px;
+    border-radius: 20px;
+  }
+
+  .workspace {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    border-radius: 20px;
+  }
+
+  .hero-card {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: auto;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 20px;
+  }
+
+  .hero-card h1 {
+    font-size: clamp(1.55rem, 10vw, 2.45rem);
+    white-space: normal;
+  }
+
+  .hero-actions {
+    width: 100%;
+  }
+
+  .hero-actions button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-inline: 10px;
+  }
+
+  .area-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .area-button {
+    min-width: 0;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 7px;
+    padding: 7px;
+    border-radius: 13px;
+  }
+
+  .area-button span {
+    width: 24px;
+    height: 24px;
+    border-radius: 9px;
+  }
+
+  .area-button strong,
+  .nav-button span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .module-nav {
+    display: flex;
+    max-width: 100%;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0 2px 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .nav-button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 92px;
+    max-width: 44vw;
+    padding: 7px 8px;
+    font-size: .78rem;
+  }
+
+  .content-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .panel-card,
+  .panel-card.wide,
+  .panel-card.full,
+  .panel-card.home-todo {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .hero-metrics,
+  .quick-grid,
+  .badge-grid,
+  .health-habit-grid,
+  .health-record-grid.week,
+  .health-record-grid.month,
+  .person-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .form-grid,
+  .habit-edit-row,
+  .focus-chart-top,
+  .focus-day-view,
+  .todo-add {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .form-grid .full {
+    grid-column: auto;
+  }
+
+  .focus-timer {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+  }
+
+  .focus-period-nav {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .focus-month-grid {
+    min-width: 0;
+    gap: 5px;
+  }
+
+  .timeline-scroll {
+    max-width: 100%;
+    overflow: auto;
+  }
+
+  .todo-row {
+    grid-template-columns: 30px minmax(46px, auto) minmax(0, 1fr);
+  }
+
+  .todo-row time {
+    grid-column: 3;
+  }
+}
