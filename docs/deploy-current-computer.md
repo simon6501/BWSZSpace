@@ -16,16 +16,19 @@ Edit `.env`:
 HOST=127.0.0.1
 PORT=3077
 LOGIN_DISABLED=false
+BW_PASSWORD=replace-with-a-strong-bw-password
+SZ_PASSWORD=replace-with-a-strong-sz-password
 SESSION_SECRET=replace-with-a-long-random-secret
 ```
 
-If `data/users.json` already exists, `APP_PASSWORD` will not overwrite it. Change password with:
+If `data/users.json` already exists, env passwords will not overwrite it. Rotate passwords with:
 
 ```bash
-node scripts/set_password.js "your-strong-password"
+node scripts/set_password.js "your-strong-bw-password" bw
+node scripts/set_password.js "your-strong-sz-password" sz
 ```
 
-Do not use `secret` for public access.
+Do not use demo passwords for public access.
 
 ## 2. Run in background
 

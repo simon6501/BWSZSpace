@@ -1,3 +1,5 @@
+// Firebase Web client config is public by design.
+// Security depends on Firebase Auth, Firestore Rules, and API key referrer restrictions.
 window.BWSZ_STORAGE = 'auto';
 
 window.BWSZ_FIREBASE_CONFIG = {

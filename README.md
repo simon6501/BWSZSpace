@@ -1,10 +1,10 @@
 # BW&SZ's space
 
-一个本地优先、可继续扩展的中文私密 Web 工作台。当前版本采用 SQLite 本地数据库，默认关闭登录，重点模块包括总览、专注定时、项目与日程、投稿管理、健康管理、心灵关怀、向上管理导师、成就殿堂和宏观数据看板。
+一个中文私密 Web 工作台。当前支持两种模式：本地 SQLite 开发模式，以及 GitHub Pages + Firebase Auth/Firestore 的公网共享模式。重点模块包括总览、专注定时、项目与日程、投稿管理、健康管理、心灵关怀、向上管理导师、成就殿堂和宏观数据看板。
 
 ## 本地运行
 
-项目不依赖第三方 npm 包，Node.js 22+ 即可。当前使用 Node 内置 `node:sqlite`。
+本地服务器使用 Node 内置 `node:sqlite`。公网静态部署使用 GitHub Pages 和 Firebase。
 
 ```bash
 npm start
@@ -22,7 +22,7 @@ http://127.0.0.1:3077
 LOGIN_DISABLED=false
 ```
 
-第一次启动时，如果 `data/users.json` 不存在，服务器仍会自动创建一个本地账号，恢复登录后可使用。当前你已把密码改为 `secret`。
+第一次启动时，如果 `data/users.json` 不存在，服务器会自动创建 BW / SZ 本地账号。公网或 tunnel 暴露前必须设置强密码并开启登录。
 
 ## 常用命令
 
@@ -59,7 +59,7 @@ npm run check # 检查 server.js 和前端 JS 语法
 
 ## API
 
-默认本地模式下登录已关闭，接口可直接使用。设置 `LOGIN_DISABLED=false` 后，`/api/state` 与 `/api/modules/*` 接口需要登录 cookie。
+默认本地开发模式下登录可关闭。任何公网、tunnel、反向代理场景都必须设置 `LOGIN_DISABLED=false`，此时 `/api/state` 与 `/api/modules/*` 接口需要登录 cookie。
 
 ```text
 GET  /api/health          健康检查
@@ -74,9 +74,18 @@ PUT  /api/modules/:key    更新单个模块数据，自动写 DB + 自动备份
 GET  /api/backups         最近自动备份日志
 ```
 
+## Public Repo 安全注意
+
+- `data/`、`logs/`、`.env`、本地下载的 tunnel 二进制都不应该提交到 public repo。
+- `public/firebase-config.js` 是 Firebase Web 客户端配置，不是服务端密钥；真正的安全边界是 Firebase Auth + Firestore Rules。
+- GitHub Pages 上线后必须在 Firebase Console 把 BW / SZ 账号密码改成强密码，不要使用演示密码。
+- 建议在 Google Cloud Console 给 Firebase Web API key 加 HTTP referrer 限制，只允许 `https://simon6501.github.io/*` 和本地开发地址。
+- Firestore Rules 必须只允许两个授权账号访问 `spaces/bwsz-state`。
+
 ## 公网部署前建议
 
-1. 在 `.env` 设置强密码和随机 `SESSION_SECRET`。
-2. 将 `HOST` 继续保留为 `127.0.0.1`，前面用 Nginx / Caddy 做 HTTPS 反向代理。
-3. 给 `data/` 做系统级定期备份，应用内已经有 latest 自动备份，但服务器层面仍建议做快照。
-4. 如果要多人账号，下一步可增加用户管理 API 和“修改密码”界面。
+1. Firebase Auth 里给 BW / SZ 设置强密码。
+2. Firestore Rules 只允许指定邮箱读写 `spaces/bwsz-state`。
+3. 如果暴露本地 Node 服务器，设置 `LOGIN_DISABLED=false`、强 `BW_PASSWORD` / `SZ_PASSWORD` 和随机 `SESSION_SECRET`。
+4. 将 `HOST` 保留为 `127.0.0.1`，前面用 Cloudflare Tunnel / Caddy / Nginx 做 HTTPS。
+5. 给 `data/` 做系统级定期备份，应用内已有 latest 自动备份，但服务器层面仍建议做快照。

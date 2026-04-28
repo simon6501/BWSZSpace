@@ -1,10 +1,18 @@
 node_modules/
 .env
+.env.*.local
+
+# Local/private runtime data
 data/*.json
 data/*.tmp
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 data/backups/
-.DS_Store
+logs/
+
+# Local binaries and downloaded tunnel clients
 bin/
+cloudflared-linux-amd64
+
+.DS_Store

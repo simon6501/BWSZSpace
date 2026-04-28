@@ -18,13 +18,28 @@ const STATE_FILE = path.join(DATA_DIR, 'app-state.json'); // legacy mirror for e
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const PORT = Number(process.env.PORT || 3077);
 const HOST = process.env.HOST || '127.0.0.1';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'local-dev-session-secret-change-before-public';
+const DEFAULT_SESSION_SECRET = 'local-dev-session-secret-change-before-public';
+const SESSION_SECRET = process.env.SESSION_SECRET || DEFAULT_SESSION_SECRET;
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const MAX_BODY_BYTES = 1024 * 1024 * 2;
 const LOGIN_DISABLED = String(process.env.LOGIN_DISABLED || 'true').toLowerCase() !== 'false';
+const LOGIN_WINDOW_MS = 1000 * 60 * 15;
+const LOGIN_MAX_ATTEMPTS = 10;
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "img-src 'self' data:",
+  "style-src 'self' 'unsafe-inline'",
+  "script-src 'self' https://www.gstatic.com",
+  "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com"
+].join('; ');
 
 let db;
 const sessions = new Map();
+const loginAttempts = new Map();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -39,6 +54,7 @@ const MIME = {
 };
 
 async function main() {
+  validateRuntimeSecurity();
   await ensureStorage();
   const server = http.createServer(handleRequest);
   server.on('error', (error) => {
@@ -127,6 +143,10 @@ async function handleRequest(req, res) {
 
 async function login(req, res) {
   if (LOGIN_DISABLED) return sendJson(res, 200, { ...publicUser(await getLocalUser()), loginDisabled: true });
+  const limiterKey = clientKey(req);
+  if (isLoginLimited(limiterKey)) {
+    return sendJson(res, 429, { error: 'TOO_MANY_ATTEMPTS', message: '登录尝试过多，请稍后再试。' });
+  }
   const body = await readBody(req);
   const { username, password } = body || {};
   if (!username || !password) return sendJson(res, 400, { error: 'MISSING_CREDENTIALS', message: '请输入用户名和密码。' });
@@ -134,9 +154,11 @@ async function login(req, res) {
   const { users } = await readUsers();
   const user = users.find((item) => item.username === String(username).trim());
   if (!user || !(await verifyPassword(password, user.password))) {
+    recordLoginFailure(limiterKey);
     return sendJson(res, 401, { error: 'INVALID_CREDENTIALS', message: '用户名或密码不正确。' });
   }
 
+  loginAttempts.delete(limiterKey);
   const token = signToken(crypto.randomBytes(32).toString('base64url'));
   sessions.set(token, { userId: user.id, expiresAt: Date.now() + SESSION_TTL_MS });
   res.setHeader('Set-Cookie', cookie('bwsz_session', token, { httpOnly: true, sameSite: 'Lax', maxAge: SESSION_TTL_MS / 1000 }));
@@ -233,7 +255,9 @@ async function backupDatabase(reason) {
 }
 
 function listBackups() {
-  return db.prepare('SELECT reason, file_path AS filePath, created_at AS createdAt FROM backup_log ORDER BY id DESC LIMIT 50').all();
+  return db.prepare('SELECT reason, file_path AS filePath, created_at AS createdAt FROM backup_log ORDER BY id DESC LIMIT 50')
+    .all()
+    .map((item) => ({ ...item, filePath: path.basename(item.filePath || '') }));
 }
 
 async function serveStatic(req, res, pathname) {
@@ -273,8 +297,23 @@ async function serveAsset(req, res, pathname) {
 }
 
 function setBaseHeaders(res) {
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+}
+function validateRuntimeSecurity() {
+  if (process.env.NODE_ENV !== 'production') return;
+  if (LOGIN_DISABLED) {
+    throw new Error('Refusing to start in production with LOGIN_DISABLED=true.');
+  }
+  if (!process.env.SESSION_SECRET || SESSION_SECRET === DEFAULT_SESSION_SECRET || SESSION_SECRET.length < 32) {
+    throw new Error('Refusing to start in production without a strong SESSION_SECRET.');
+  }
 }
 function sendJson(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -384,6 +423,23 @@ function cookie(name, value, options = {}) {
   if (options.maxAge !== undefined) parts.push(`Max-Age=${Math.floor(options.maxAge)}`);
   if (process.env.NODE_ENV === 'production') parts.push('Secure');
   return parts.join('; ');
+}
+function clientKey(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'local').split(',')[0].trim();
+}
+function isLoginLimited(key) {
+  const entry = loginAttempts.get(key);
+  if (!entry || Date.now() > entry.resetAt) return false;
+  return entry.count >= LOGIN_MAX_ATTEMPTS;
+}
+function recordLoginFailure(key) {
+  const now = Date.now();
+  const entry = loginAttempts.get(key);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+    return;
+  }
+  entry.count += 1;
 }
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
