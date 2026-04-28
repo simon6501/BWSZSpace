@@ -1,4 +1,8 @@
-const api = {
+const DOG_AVATAR = './assets/dog.jpg';
+const FIREBASE_STATE_PATH = ['spaces', 'bwsz-state'];
+
+const serverApi = {
+  storage: 'server',
   async request(path, options = {}) {
     const response = await fetch(path, {
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
@@ -16,6 +20,228 @@ const api = {
   save(state) { return this.request('/api/state', { method: 'PUT', body: JSON.stringify(state) }); },
   backups() { return this.request('/api/backups'); }
 };
+
+const firebaseApi = {
+  storage: 'firebase',
+  app: null,
+  auth: null,
+  db: null,
+  unsubscribeState: null,
+  lastWriteId: '',
+  async init() {
+    if (this.app) return;
+    if (!window.BWSZ_FIREBASE_CONFIG?.apiKey) throw new Error('缺少 Firebase 配置。');
+    await loadFirebaseCompatSdk();
+    this.app = firebase.apps?.length ? firebase.app() : firebase.initializeApp(window.BWSZ_FIREBASE_CONFIG);
+    this.auth = firebase.auth();
+    this.db = firebase.firestore();
+  },
+  async login(username, password) {
+    await this.init();
+    const identity = resolveFirebaseIdentity(username);
+    const credential = await this.auth.signInWithEmailAndPassword(identity.email, password);
+    const user = credential.user;
+    assertFirebaseUserAllowed(user);
+    return firebasePublicUser(user);
+  },
+  async me() {
+    await this.init();
+    const user = await this.waitForUser();
+    if (!user) throw new Error('UNAUTHENTICATED');
+    assertFirebaseUserAllowed(user);
+    return firebasePublicUser(user);
+  },
+  async logout() {
+    await this.init();
+    if (this.unsubscribeState) {
+      this.unsubscribeState();
+      this.unsubscribeState = null;
+    }
+    await this.auth.signOut();
+    return { ok: true };
+  },
+  waitForUser() {
+    return new Promise((resolve) => {
+      const unsubscribe = this.auth.onAuthStateChanged((user) => {
+        unsubscribe();
+        resolve(user);
+      });
+    });
+  },
+  docRef() {
+    return this.db.collection(FIREBASE_STATE_PATH[0]).doc(FIREBASE_STATE_PATH[1]);
+  },
+  async state() {
+    await this.init();
+    const snapshot = await this.docRef().get();
+    if (!snapshot.exists) {
+      const initial = clientSeedState();
+      await this.writeRemoteState(initial, 'init');
+      this.listenRemoteState();
+      return initial;
+    }
+    const data = snapshot.data() || {};
+    const state = normalizeRemoteState(data.state || data);
+    this.listenRemoteState();
+    return state;
+  },
+  async save(state) {
+    await this.init();
+    const next = normalizeRemoteState(state);
+    next.meta = { ...(next.meta || {}), storage: 'firebase', updatedAt: new Date().toISOString(), updatedBy: currentPerson() };
+    await this.writeRemoteState(next, 'state-write');
+    return next;
+  },
+  async writeRemoteState(state, reason) {
+    this.lastWriteId = cryptoId();
+    await this.docRef().set({
+      state,
+      reason,
+      writeId: this.lastWriteId,
+      updatedBy: this.auth.currentUser?.email || '',
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  },
+  listenRemoteState() {
+    if (this.unsubscribeState) return;
+    this.unsubscribeState = this.docRef().onSnapshot((snapshot) => {
+      if (!snapshot.exists || !app.state) return;
+      const data = snapshot.data() || {};
+      if (data.writeId && data.writeId === this.lastWriteId) return;
+      if (app.saving || app.dirty || document.activeElement?.matches('input, textarea, select')) return;
+      applyRemoteState(normalizeRemoteState(data.state || data));
+    });
+  },
+  backups() { return Promise.resolve([]); }
+};
+
+const api = shouldUseFirebase() ? firebaseApi : serverApi;
+let firebaseSdkPromise = null;
+
+function loadFirebaseCompatSdk() {
+  if (window.firebase?.auth && window.firebase?.firestore) return Promise.resolve();
+  if (firebaseSdkPromise) return firebaseSdkPromise;
+  const version = '12.12.1';
+  firebaseSdkPromise = loadScript(`https://www.gstatic.com/firebasejs/${version}/firebase-app-compat.js`)
+    .then(() => Promise.all([
+      loadScript(`https://www.gstatic.com/firebasejs/${version}/firebase-auth-compat.js`),
+      loadScript(`https://www.gstatic.com/firebasejs/${version}/firebase-firestore-compat.js`)
+    ]))
+    .then(() => {
+      if (!window.firebase?.auth || !window.firebase?.firestore) throw new Error('Firebase SDK 没有加载完整。');
+    });
+  return firebaseSdkPromise;
+}
+
+function loadScript(src) {
+  if (document.querySelector(`script[src="${src}"]`)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`无法加载 ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+function shouldUseFirebase() {
+  const forced = new URLSearchParams(window.location.search).get('storage') || window.BWSZ_STORAGE;
+  if (forced === 'firebase') return true;
+  if (forced === 'server' || forced === 'sqlite' || forced === 'local') return false;
+  const host = window.location.hostname;
+  const isLocal = !host || host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local');
+  return Boolean(window.BWSZ_FIREBASE_CONFIG?.apiKey && !isLocal);
+}
+
+function resolveFirebaseIdentity(username) {
+  const raw = String(username || '').trim().toLowerCase();
+  const users = window.BWSZ_FIREBASE_USERS || {};
+  if (users[raw]?.email) return { key: raw, ...users[raw] };
+  const found = Object.entries(users).find(([, user]) => String(user.email || '').toLowerCase() === raw);
+  if (found) return { key: found[0], ...found[1] };
+  if (raw.includes('@')) return { key: raw.split('@')[0], email: raw, person: raw.startsWith('sz') ? 'sz' : 'bw', displayName: raw.startsWith('sz') ? 'SZ' : 'BW' };
+  throw new Error('请输入 bw / sz，或完整邮箱。');
+}
+
+function assertFirebaseUserAllowed(user) {
+  const email = String(user?.email || '').toLowerCase();
+  const allowed = Object.values(window.BWSZ_FIREBASE_USERS || {}).map((item) => String(item.email || '').toLowerCase()).filter(Boolean);
+  if (allowed.length && !allowed.includes(email)) {
+    firebaseApi.auth?.signOut();
+    throw new Error('这个账号没有进入 BW&SZ space 的权限。');
+  }
+}
+
+function firebasePublicUser(user) {
+  const email = String(user?.email || '').toLowerCase();
+  const entry = Object.entries(window.BWSZ_FIREBASE_USERS || {}).find(([, item]) => String(item.email || '').toLowerCase() === email);
+  const key = entry?.[0] || (email.startsWith('sz') ? 'sz' : 'bw');
+  const info = entry?.[1] || {};
+  return { id: user.uid, username: key, displayName: info.displayName || key.toUpperCase(), person: info.person || key, email, storage: 'firebase' };
+}
+
+function normalizeRemoteState(state) {
+  const base = clientSeedState();
+  const next = state && typeof state === 'object' ? state : {};
+  return {
+    ...base,
+    ...next,
+    meta: { ...base.meta, ...(next.meta || {}), storage: 'firebase' },
+    couple: { ...base.couple, ...(next.couple || {}) },
+    people: { ...base.people, ...(next.people || {}) },
+    modules: Array.isArray(next.modules) ? next.modules : base.modules,
+    spaces: mergeSpaces(base.spaces, next.spaces || {})
+  };
+}
+
+function mergeSpaces(baseSpaces, spaces) {
+  return Object.fromEntries(Object.keys(baseSpaces).map((key) => [key, { ...baseSpaces[key], ...(spaces[key] || {}) }]));
+}
+
+function clientSeedState() {
+  const now = new Date().toISOString();
+  const projectId = cryptoId();
+  return {
+    meta: { name: "BW&SZ's space", locale: 'zh-CN', version: '0.3.0', storage: 'firebase', createdAt: now, updatedAt: now },
+    couple: { title: "BW&SZ's space", subtitle: '两个工程博士的生活、科研、专注与长期项目基地' },
+    people: {
+      bw: { id: 'bw', name: 'BW', color: '#ff8c42', avatar: DOG_AVATAR },
+      sz: { id: 'sz', name: 'SZ', color: '#4d9de0', avatar: DOG_AVATAR }
+    },
+    modules: defaultModules(),
+    spaces: {
+      home: { todayNote: '先把重要的事情做小，再稳定推进。', pinned: [] },
+      focus: { active: null, preferredMinutes: 50, chartMode: 'week', chartAnchor: today(), sessions: [] },
+      planning: { view: 'week', anchorDate: today(), selectedTaskId: null, projects: [], tasks: [] },
+      submissions: { papers: [] },
+      mentor: { meetings: [], questions: [], followups: [] },
+      dashboard: { window: 'week' },
+      achievements: { items: [], badgeTasks: [] },
+      life: { todos: [] },
+      health: { habits: [
+        { id: 'sleep', title: '睡眠 7h+', kind: 'check', target: 1, doneBy: { bw: false, sz: false } },
+        { id: 'water', title: '饮水 6 杯', kind: 'count', target: 6, doneBy: { bw: false, sz: false } },
+        { id: 'move', title: '散步 / 运动', kind: 'check', target: 1, doneBy: { bw: false, sz: false } },
+        { id: 'eyes', title: '护眼休息', kind: 'count', target: 3, doneBy: { bw: false, sz: false } }
+      ], habitLogs: {}, view: 'week', checkins: [], leave: [] },
+      care: { mood: '平静', notes: [] },
+      memories: { moments: [{ id: projectId, title: '系统上线第一天', date: today(), place: 'Home Lab', type: 'milestone', mood: '期待', detail: 'BW&SZ Space 上线，开始记录共同生活和长期计划。', tags: ['共同系统', '第一天'], person: 'bw' }] }
+    }
+  };
+}
+
+function applyRemoteState(nextState) {
+  app.state = nextState;
+  ensureModuleAreas();
+  ensurePeople();
+  updateIdentityChrome();
+  renderAreas();
+  renderNav();
+  renderActive({ preserveScroll: true, quiet: true });
+  $('#saveBtn').textContent = '云端同步已更新';
+}
+
 
 const app = {
   user: null,
@@ -70,7 +296,7 @@ function bindShellEvents() {
     showLogin();
   });
 
-  $('#saveBtn').addEventListener('click', () => toast('已开启自动保存：每次修改都会写入 SQLite 并生成最新备份。'));
+  $('#saveBtn').addEventListener('click', () => toast(api.storage === 'firebase' ? '已开启云端同步：修改会写入 Firestore。' : '已开启自动保存：每次修改都会写入 SQLite 并生成最新备份。'));
   content.addEventListener('click', handleContentClick);
   content.addEventListener('submit', handleContentSubmit);
   content.addEventListener('input', handleContentInput);
@@ -88,8 +314,8 @@ async function enterApp() {
   $('#appView').classList.remove('hidden');
   $('#logoutBtn').classList.toggle('hidden', Boolean(app.user?.loginDisabled));
   updateIdentityChrome();
-  $('#saveBtn').textContent = '自动保存已开启';
-  $('#exportBtn').textContent = '备份记录';
+  $('#saveBtn').textContent = api.storage === 'firebase' ? '云端同步已开启' : '自动保存已开启';
+  $('#exportBtn').textContent = api.storage === 'firebase' ? 'Firebase 云端' : '备份记录';
   renderAreas();
   renderNav();
   renderActive();
@@ -297,7 +523,7 @@ function renderFocus() {
     </div>
   `, 'full');
 
-  addCard('最近记录', '自动保存到本地 SQLite。', `
+  addCard('最近记录', api.storage === 'firebase' ? '自动同步到 Firestore。' : '自动保存到本地 SQLite。', `
     <div class="list compact-list">
       ${(focus.sessions || []).slice().reverse().slice(0, 8).map((session) => `
         <article class="item"><div class="item-head"><h3>${personBadge(session.person)} ${esc(session.title || '专注')}</h3><span class="chip">${session.minutes} 分钟</span></div><p>${formatDateTime(session.start)} - ${formatTime(session.end)} · ${esc(session.source || 'timer')}</p></article>
@@ -600,7 +826,11 @@ function renderDashboard() {
     </div>
   `, 'full');
   addCard('专注趋势', '轻量柱状图，不堆复杂图表。', renderBars(focusStats('week').bars, focusStats('week').max), 'wide');
-  addCard('本地数据库状态', '数据写入 SQLite；每次修改自动生成 latest 备份。', `<p><code>data/bwsz-space.sqlite</code></p><p><code>data/backups/bwsz-space-latest.sqlite</code></p><p class="tiny">不再需要手动备份按钮，拖拽/编辑后的保存会自动触发。</p>`);
+  if (api.storage === 'firebase') {
+    addCard('云端同步状态', '', `<p><code>Firestore: spaces/bwsz-state</code></p><p><code>Auth: BW / SZ</code></p>`);
+  } else {
+    addCard('本地数据库状态', '', `<p><code>data/bwsz-space.sqlite</code></p><p><code>data/backups/bwsz-space-latest.sqlite</code></p>`);
+  }
 }
 
 
@@ -752,7 +982,7 @@ function handleContentSubmit(event) {
   if (form.dataset.form === 'mentor-meeting') app.state.spaces.mentor.meetings.unshift({ id, owner: currentPerson(), ...data });
   if (form.dataset.form === 'badge-task') app.state.spaces.achievements.badgeTasks.push({ id, person: currentPerson(), title: data.title, target: Number(data.target || 1), progress: 0, awarded: false });
   if (form.dataset.form === 'achievement') app.state.spaces.achievements.items.unshift({ id, person: currentPerson(), level: 'manual', ...data });
-  markDirty('已自动保存到本地数据库。');
+  markDirty(api.storage === 'firebase' ? '已同步到云端。' : '已自动保存到本地数据库。');
   renderActive({ preserveScroll: true, quiet: true });
 }
 
@@ -976,9 +1206,9 @@ async function saveState(immediate = false) {
       app.state = await api.save(app.state);
       ensurePeople();
           app.dirty = false;
-      $('#saveBtn').textContent = '自动保存已完成';
+      $('#saveBtn').textContent = api.storage === 'firebase' ? '云端同步已完成' : '自动保存已完成';
     } catch (error) {
-      $('#saveBtn').textContent = '自动保存失败';
+      $('#saveBtn').textContent = api.storage === 'firebase' ? '云端同步失败' : '自动保存失败';
       toast(error.message);
     } finally {
       app.saving = false;
@@ -990,7 +1220,7 @@ async function saveState(immediate = false) {
 }
 function markDirty(message, immediate = false) {
   app.dirty = true;
-  $('#saveBtn').textContent = '自动保存中…';
+  $('#saveBtn').textContent = api.storage === 'firebase' ? '云端同步中…' : '自动保存中…';
   saveState(immediate);
   if (message) toast(message);
 }
@@ -1367,8 +1597,10 @@ function moduleArea(key) {
 
 function ensurePeople() {
   app.state.people = app.state.people || {};
-  app.state.people.bw = { id: 'bw', name: 'BW', color: '#ff8c42', avatar: '/assets/dog.jpg', ...(app.state.people.bw || {}) };
-  app.state.people.sz = { id: 'sz', name: 'SZ', color: '#4d9de0', avatar: '/assets/dog.jpg', ...(app.state.people.sz || {}) };
+  app.state.people.bw = { id: 'bw', name: 'BW', color: '#ff8c42', avatar: DOG_AVATAR, ...(app.state.people.bw || {}) };
+  app.state.people.sz = { id: 'sz', name: 'SZ', color: '#4d9de0', avatar: DOG_AVATAR, ...(app.state.people.sz || {}) };
+  app.state.people.bw.avatar = normalizeAssetPath(app.state.people.bw.avatar);
+  app.state.people.sz.avatar = normalizeAssetPath(app.state.people.sz.avatar);
 }
 
 
@@ -1387,7 +1619,7 @@ function personName(person) {
 }
 
 function personAvatar(person) {
-  return personConfig(person).avatar || '/assets/dog.jpg';
+  return normalizeAssetPath(personConfig(person).avatar || DOG_AVATAR);
 }
 
 function personBadge(person) {
@@ -1463,6 +1695,7 @@ function formatDateTime(value) { return new Intl.DateTimeFormat('zh-CN', { month
 function formatTime(value) { return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(value)); }
 function today() { return toDateKey(new Date()); }
 function pickColor(index) { return ['#ff8c42', '#4d9de0', '#43aa8b', '#ff6b8b', '#9b5de5', '#f9c74f'][index % 6]; }
+function normalizeAssetPath(value) { return String(value || DOG_AVATAR).replace(/^\/assets\//, './assets/'); }
 function splitTags(value) { return String(value || '').split(/[,，]/).map((tag) => tag.trim()).filter(Boolean); }
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 function getModule(key) { return app.state.modules.find((module) => module.key === key); }
